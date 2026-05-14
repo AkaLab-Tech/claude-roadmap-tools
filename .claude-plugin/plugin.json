@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "claude-roadmap-tools",
+  "version": "0.1.0",
+  "description": "Standalone Claude Code plugin: ROADMAP / IN_PROGRESS / HISTORY tracking flow with /create-roadmap and /migrate-roadmap",
+  "author": {
+    "name": "AkaLab-Tech",
+    "url": "https://github.com/AkaLab-Tech"
+  },
+  "homepage": "https://github.com/AkaLab-Tech/claude-roadmap-tools",
+  "repository": "https://github.com/AkaLab-Tech/claude-roadmap-tools",
+  "keywords": [
+    "roadmap",
+    "task-tracking",
+    "claude-code",
+    "plugin"
+  ]
+}
