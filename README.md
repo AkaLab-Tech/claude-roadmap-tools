@@ -10,14 +10,14 @@ It packages:
 
 ## Install
 
-In a Claude Code session:
+This plugin is published through the **[AkaLab-Tech plugin catalog](https://github.com/AkaLab-Tech/claude-plugins)** — a single marketplace that lists every plugin AkaLab-Tech publishes. In a Claude Code session, register the catalog once and install the plugin:
 
 ```
-/plugin marketplace add AkaLab-Tech/claude-roadmap-tools
+/plugin marketplace add AkaLab-Tech/claude-plugins
 /plugin install claude-roadmap-tools@akalab-tech
 ```
 
-The marketplace name is `akalab-tech` (shared namespace for all AkaLab-Tech plugins). After install, restart Claude Code if the new slash commands and the skill do not appear immediately.
+The marketplace is named `akalab-tech`, so any other AkaLab-Tech plugin can be installed later from the same catalog with `/plugin install <name>@akalab-tech` — no extra `marketplace add` step needed. After install, restart Claude Code if the new slash commands and the skill do not appear immediately.
 
 ## Quick start
 
