@@ -11,9 +11,14 @@ Keep the user's task tracking consistent across the three top-level files (`ROAD
 
 The skill's operations follow the abstract `RoadmapBackend` contract documented in [`docs/RoadmapBackend.md`](../../docs/RoadmapBackend.md). That document is the canonical spec — operation signatures, error names, atomicity rules, and per-backend notes — and is shared with every other piece of the plugin (the slash commands and any future backend).
 
-This `SKILL.md` expresses the **`FilesBackend`** implementation of the contract: how each operation is performed when the repo's `.roadmap.json` is absent or has `backend: "files"` (the default). The `LinearBackend` instructions are added in a follow-up PR; future backends (`GitHubIssuesBackend`, `JiraBackend`, `TrelloBackend`) extend this file in the same pattern, each adding its per-operation notes.
+This `SKILL.md` expresses both backends shipped with the plugin:
 
-The plugin is 100% markdown — the contract is a specification the skill follows, not a runtime API. The function-style signatures in [Operations](#operations-filesbackend) below describe inputs, outputs, and behaviour, not callable code.
+- **`FilesBackend`** — applied when `.roadmap.json` is absent or declares `backend: "files"` (the default). Markdown files at the repo root, single-file or indexed layout. See [Operations (`FilesBackend`)](#operations-filesbackend) below.
+- **`LinearBackend`** — applied when `.roadmap.json` declares `backend: "linear"`. Linear issues backed by the Linear MCP server. See [Operations (`LinearBackend`)](#operations-linearbackend) below.
+
+Future backends (`GitHubIssuesBackend`, `JiraBackend`, `TrelloBackend`) extend this file in the same pattern, each adding its own `## Operations (<BackendName>)` sibling section with per-operation notes.
+
+The plugin is 100% markdown — the contract is a specification the skill follows, not a runtime API. The function-style signatures in the Operations sections below describe inputs, outputs, and behaviour, not callable code.
 
 ## When this skill applies
 
@@ -215,7 +220,133 @@ In **indexed layout**, the `roadmap/TASK_NNN_<slug>.md` file is **kept as the so
 
 For `FilesBackend`, `isAvailable()` is always `true` — the filesystem is the backend. Once the activation predicate in [When this skill applies](#when-this-skill-applies) matches, operations proceed unconditionally.
 
-(For remote backends like `LinearBackend`, `isAvailable()` performs a cheap connectivity check without triggering OAuth or any mutating call. See the matching section in [`docs/RoadmapBackend.md`](../../docs/RoadmapBackend.md).)
+(For remote backends like `LinearBackend`, `isAvailable()` performs a cheap connectivity check without triggering OAuth or any mutating call. See [Operations (`LinearBackend`)](#operations-linearbackend) below for the concrete implementation, and the matching section in [`docs/RoadmapBackend.md`](../../docs/RoadmapBackend.md) for the contract.)
+
+## Operations (`LinearBackend`)
+
+This section describes how each of the six contract operations is performed when the repo's `.roadmap.json` declares `backend: "linear"`. The structure mirrors [Operations (`FilesBackend`)](#operations-filesbackend) above; only the per-operation implementation differs.
+
+Activation prerequisites (assumed by every operation below):
+
+- `.roadmap.json` exists at the repo root with `backend: "linear"`, a valid `linear.teamId`, and a `linear.stateMap` matching the team's Linear workflow (defaults: `roadmap: ["Backlog", "Todo"]`, `inProgress: ["In Progress"]`, `history: ["Done", "Cancelled"]`).
+- A Linear MCP server is registered with Claude Code, reachable at `https://mcp.linear.app/mcp`. The canonical install command is documented in [TASK_001 — Linear backend specifics](../../roadmap/TASK_001_multi-backend-linear-first.md#linear-backend-specifics). `/create-roadmap` installs it automatically the first time a user picks `backend: "linear"`.
+- The user has authorized the Linear MCP via OAuth at least once in this Claude Code installation. The first-ever Linear MCP call triggers a browser-based OAuth flow; subsequent calls reuse the cached token until it expires.
+
+Tool naming convention: the operations below refer to Linear MCP tools by their **role** (issue-list, issue-fetch, issue-create, issue-update, comment-create) rather than by exact tool names, which depend on the Linear MCP version. The skill resolves the right tool at call time by inspecting the MCP's tool list.
+
+### `listTasks(bucket)` — propose / inspect the buckets
+
+Resolve the Linear workflow states for the requested bucket via `linear.stateMap[bucket]` in `.roadmap.json` (e.g. `["Backlog", "Todo"]` for `"roadmap"` under the defaults).
+
+Call the Linear MCP issue-list tool with:
+
+- `team`: from `linear.teamId`.
+- state filter: any state in `linear.stateMap[bucket]`.
+
+Order: Linear's default sort (priority then created date) unless the user has a custom team view configured — defer to it where the MCP exposes views.
+
+For each returned issue, build a task element with:
+
+- `id`: Linear's identifier (e.g. `ENG-123`).
+- `title`: from the issue title.
+- `current_bucket`: derived by reverse-mapping the issue's state through `linear.stateMap`.
+
+When `offlineMirror: true`, the same operation **also** refreshes the local mirror by rewriting the corresponding markdown file from Linear's authoritative state (see [TASK_001 — Offline mirror semantics](../../roadmap/TASK_001_multi-backend-linear-first.md#offline-mirror-semantics) for the rules).
+
+**Errors** — empty bucket returns an empty list (not an error). MCP unavailable → throw `backend-unavailable`.
+
+### `getTask(id)` — fetch a single task's full content
+
+Call the Linear MCP issue-fetch tool with the canonical `id`.
+
+Return:
+
+- `id`: the Linear identifier.
+- `title`: from the issue.
+- `body`: from the issue description (markdown supported by Linear).
+- `current_bucket`: reverse-mapped from the issue's state.
+- `comments`: the issue's comment thread (each with author + body).
+
+**Where progress notes live (LinearBackend equivalent of `## Status`)**: there is no `## Status` section in Linear; the equivalent is the **issue's comment thread**. When asked "what's in progress?", surface the most recent meaningful progress comment as the active state, the same way `FilesBackend` surfaces the latest `## Status` entry.
+
+**Errors** — throw `task-not-found` if Linear has no issue with that id, or it belongs to a different team than `linear.teamId`. MCP unavailable → throw `backend-unavailable`.
+
+### `addTask(task)` — adding a new task to the `ROADMAP`
+
+When the user asks to add a new task:
+
+1. **Confirm scope and priority.** If the user has not specified a priority (Linear's Urgent / High / Medium / Low / No-priority), ask. When migrating from a `FilesBackend` repo, map markdown sections (`High Priority`, `Medium Priority`, `Low Priority`) to Linear priorities accordingly.
+2. **Call the Linear MCP issue-create tool** with:
+   - `team`: from `linear.teamId`.
+   - `title`: from the task.
+   - `description`: from the task body.
+   - `state`: the **first** element of `linear.stateMap.roadmap` (e.g. `Backlog` under the defaults).
+   - `priority`: from the task input (or `0` / No priority if absent).
+3. **Capture the assigned Linear id** (e.g. `ENG-123`) and return it.
+
+When `offlineMirror: true`, the same operation **also** writes a new `roadmap/TASK_NNN_<slug>.md` locally with frontmatter `backend: linear` + `backendId: <Linear id>`, plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the Linear id.
+
+**Side effects** — task exists on Linear in `linear.stateMap.roadmap[0]` (typically `Backlog`).
+
+**Errors** — invalid input (missing title) → throw. Team permission denied by Linear → throw, surfacing the Linear error verbatim.
+
+### `moveTask(id, fromBucket, toBucket)` — moving a task between buckets
+
+> **Moving INTO `history` is forbidden in this operation.** Use `appendHistoryEntry` instead — history transitions require PR metadata and an atomic comment-append.
+
+1. **Pre-check the source bucket.** Call the Linear MCP issue-fetch tool. Verify that the issue's current state is in `linear.stateMap[fromBucket]`. If not, throw `task-not-in-from-bucket`.
+2. **Resolve target state.** Use the **first** element of `linear.stateMap[toBucket]`.
+3. **Call the Linear MCP issue-update tool** to set `state` to the resolved target. Linear's state-change is atomic per call — that satisfies the contract's atomicity requirement.
+
+When `offlineMirror: true`, the same operation **also** rewrites the corresponding link entries in the local `ROADMAP.md` ↔ `IN_PROGRESS.md` (mirroring the `FilesBackend` behaviour). Both the local file edits and the Linear API call must succeed together; if the Linear call fails, no local files are touched. The local `roadmap/TASK_NNN_*.md` is **not** moved or renamed (indexed-layout rule).
+
+**Errors** — `task-not-in-from-bucket`, `move-into-history-forbidden` (when `toBucket == "history"`), `backend-unavailable`.
+
+### `appendHistoryEntry(id, prMetadata)` — logging completed work
+
+The **load-bearing atomic operation** that enforces the [pre-merge tracking rule](#pre-merge-tracking-rule-load-bearing) above. Three steps in sequence:
+
+1. **Pre-check.** Verify the issue's current state is in `linear.stateMap.in_progress`. If not, throw `task-not-in-progress`.
+2. **Update state to history.** Call the Linear MCP issue-update tool to set the issue's state to the first element of `linear.stateMap.history` (e.g. `Done`).
+3. **Append PR metadata as a Linear comment.** Call the Linear MCP comment-create tool with the comment body formatted as:
+
+   ```markdown
+   ## Closed by PR [#<N>](<full GitHub URL>)
+
+   <1–2 sentence framing of why this PR existed.>
+
+   **Delivered:**
+   - <bullet>
+   - <bullet>
+
+   **Tests:** <one line on the validation done>
+
+   **Follow-ups:** (optional)
+   - <bullet>
+   ```
+
+**Atomicity caveat** — Linear's state-change is atomic per API call, but comment-create is a separate call. If the state change succeeds but the comment append fails:
+
+- **Do not** revert the state change — the task is genuinely done; reverting would be misleading.
+- **Retry** the comment append once. If it still fails, surface a clear warning to the user with the exact comment text so they can post it manually, and continue.
+
+This caveat is documented in [`docs/RoadmapBackend.md` — Atomicity and rollback](../../docs/RoadmapBackend.md).
+
+When `offlineMirror: true`, the same operation **also** removes the link entry from local `IN_PROGRESS.md` and appends an entry to local `HISTORY.md` mirroring the comment content (entry shape: same as `FilesBackend.appendHistoryEntry` — `### <Title> — YYYY-MM-DD` / `**PR:** [#N](url)` / `**Delivered:** …` / `**Tests:** …` / `**Follow-ups:** …`). Local edits bundle with the Linear calls in the same logical transaction.
+
+**Errors** — `task-not-in-progress`, missing required `prMetadata` fields, `backend-unavailable`.
+
+### `isAvailable()` — connectivity check
+
+For `LinearBackend`, `isAvailable()` returns `true` iff a Linear MCP server is registered in Claude Code. The check is:
+
+1. Inspect the MCP server list (the skill calls Claude Code's MCP listing — equivalent to what `claude mcp list` would show).
+2. Look for an MCP whose host matches `mcp.linear.app` (or whose name matches a known registration name like `linear-server`).
+3. Return `true` if found; `false` otherwise.
+
+**Must not** issue any Linear API call — doing so would trigger the OAuth browser flow on first-ever invocation, violating the contract's "no side effects" rule for `isAvailable`.
+
+When `isAvailable()` returns `false`, the skill surfaces this error to the user (and `/create-roadmap` re-suggests the install command). Operations that depend on the Linear MCP throw `backend-unavailable` when called against an unavailable backend.
 
 ## Format conventions
 
