@@ -105,7 +105,7 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - [x] Design and document the `RoadmapBackend` interface — see [`docs/RoadmapBackend.md`](../docs/RoadmapBackend.md).
 - [x] Implement `FilesBackend` against the new interface — see the refactored [`skills/roadmap-tracking-flow/SKILL.md`](../skills/roadmap-tracking-flow/SKILL.md). No behaviour change for current users; instructions reorganized around the six operations of the contract.
 - [x] Implement `LinearBackend` — see the new [`## Operations (LinearBackend)`](../skills/roadmap-tracking-flow/SKILL.md#operations-linearbackend) sibling section in `SKILL.md`. Covers state mapping via `linear.stateMap`, ID translation, per-operation MCP tool roles, OAuth-pending awareness in `isAvailable`, atomicity caveat for `appendHistoryEntry` (state change + comment append), and mirror-aware behaviour when `offlineMirror: true`.
-- [ ] `/create-roadmap` extensions: backend selection prompts, Linear team selection, `.roadmap.json` write, MCP auto-install via the canonical one-liner, mirror opt-in, `.gitignore` append.
+- [x] `/create-roadmap` extensions — see [`commands/create-roadmap.md`](../commands/create-roadmap.md). Adds: backend prompt (`files`/`linear`), MCP auto-install via the canonical `claude mcp add` one-liner with OAuth heads-up, Linear team selection via the MCP team-list tool (with `--team` override flag), `.roadmap.json` write (only for `backend: linear`; absence of the file still means `files`), offline-mirror prompt, idempotent `.gitignore` append (only when `.gitignore` already exists at the repo root). Refuses to reconfigure when `.roadmap.json` already exists. Extended `$ARGUMENTS` parsing for `--backend`, `--layout`, `--mirror` / `--no-mirror`, `--team`, with explicit conflict detection.
 - [ ] `/migrate-roadmap` extensions: `--to` flag, `files → linear` migration with ID write-back, "not yet implemented" stubs for other directions.
 - [ ] Update the `roadmap-tracking-flow` skill: (a) read `.roadmap.json`, (b) route operations through the backend abstraction, (c) auto-refresh local mirror from Linear on activation when applicable, with safe failure mode.
 - [ ] Update `README.md` with the new backend selection flow and the offline-mirror caveats.
@@ -125,6 +125,21 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - Documentation lives in `README.md`, `CLAUDE.md`, or `docs/` (ADRs). Anything in `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` (and `roadmap/TASK_NNN_*.md`) is task tracking, not documentation.
 
 ## Status
+
+### 2026-05-22 — `/create-roadmap` extended for backend selection
+
+Sub-task #4 (`/create-roadmap` extensions) delivered. Reworked [`commands/create-roadmap.md`](../commands/create-roadmap.md):
+
+- **`## Behavior`** rewritten as a numbered flow with explicit branches per backend (5a files, 5b linear). Both branches converge in steps 6 (report) and 7 (skill activation reminder).
+- **Backend-first prompt order** (decision confirmed with the maintainer for this PR): the command asks `files` vs `linear` first; for `linear` it skips the layout question (mirror is always indexed).
+- **Linear setup flow**: detect MCP registration → install with `claude mcp add --transport http linear-server https://mcp.linear.app/mcp` if missing (with OAuth browser heads-up) → call MCP team-list (this is what triggers OAuth on first ever use) → interactive team picker → offline-mirror prompt → write `.roadmap.json` → if mirror is on, create the three tracking files + empty `roadmap/`, and append four lines to `.gitignore` **only if it already exists** (idempotent, no duplicates).
+- **`backend: files` writes no `.roadmap.json`** — the absence of the file is the signal for the default backend. Keeps existing files-only repos clean.
+- **Idempotency**: when `.roadmap.json` already exists, the command echoes the current config and stops — does not reconfigure silently. `/migrate-roadmap` is the path for switching backends later.
+- **`$ARGUMENTS`** parsing extended for `--backend`, `--layout`, `--mirror` / `--no-mirror`, `--team`, with explicit conflict detection (e.g. `--backend linear --layout single-file` errors out instead of silently picking a winner). Three concrete examples included in the doc, from fully-interactive to fully non-interactive.
+- **New `.roadmap.json` template** added next to the existing markdown templates.
+- **Transitional note** in step 7: `linear + offlineMirror: false` does **not** yet auto-activate the skill (its activation predicate today is "presence of all three tracking files"). The skill is still reachable via the second activation predicate ("user explicitly references the flow"). Sub-task #6 adds `.roadmap.json` presence as a third predicate to close this gap.
+
+Next sub-task: `/migrate-roadmap` extensions (sub-task #5) — `--to` flag, `files → linear` migration with ID write-back, "not yet implemented" stubs for other directions.
 
 ### 2026-05-22 — `LinearBackend` instructions documented in `SKILL.md`
 
