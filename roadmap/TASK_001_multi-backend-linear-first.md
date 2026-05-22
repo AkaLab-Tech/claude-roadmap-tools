@@ -104,7 +104,7 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 
 - [x] Design and document the `RoadmapBackend` interface — see [`docs/RoadmapBackend.md`](../docs/RoadmapBackend.md).
 - [x] Implement `FilesBackend` against the new interface — see the refactored [`skills/roadmap-tracking-flow/SKILL.md`](../skills/roadmap-tracking-flow/SKILL.md). No behaviour change for current users; instructions reorganized around the six operations of the contract.
-- [ ] Implement `LinearBackend` (state mapping, ID translation, error surfaces, OAuth-pending awareness).
+- [x] Implement `LinearBackend` — see the new [`## Operations (LinearBackend)`](../skills/roadmap-tracking-flow/SKILL.md#operations-linearbackend) sibling section in `SKILL.md`. Covers state mapping via `linear.stateMap`, ID translation, per-operation MCP tool roles, OAuth-pending awareness in `isAvailable`, atomicity caveat for `appendHistoryEntry` (state change + comment append), and mirror-aware behaviour when `offlineMirror: true`.
 - [ ] `/create-roadmap` extensions: backend selection prompts, Linear team selection, `.roadmap.json` write, MCP auto-install via the canonical one-liner, mirror opt-in, `.gitignore` append.
 - [ ] `/migrate-roadmap` extensions: `--to` flag, `files → linear` migration with ID write-back, "not yet implemented" stubs for other directions.
 - [ ] Update the `roadmap-tracking-flow` skill: (a) read `.roadmap.json`, (b) route operations through the backend abstraction, (c) auto-refresh local mirror from Linear on activation when applicable, with safe failure mode.
@@ -125,6 +125,14 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - Documentation lives in `README.md`, `CLAUDE.md`, or `docs/` (ADRs). Anything in `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` (and `roadmap/TASK_NNN_*.md`) is task tracking, not documentation.
 
 ## Status
+
+### 2026-05-22 — `LinearBackend` instructions documented in `SKILL.md`
+
+Sub-task #3 (`Implement LinearBackend`) delivered. Added a new sibling section [`## Operations (LinearBackend)`](../skills/roadmap-tracking-flow/SKILL.md#operations-linearbackend) in `SKILL.md` with per-operation instructions for all six operations: state-map resolution, Linear MCP tool roles (issue-list, issue-fetch, issue-create, issue-update, comment-create), ID translation, OAuth-pending awareness in `isAvailable` (no API call → no browser prompt), and the atomicity caveat for `appendHistoryEntry` (Linear state change is atomic, comment append is a separate call → retry once, surface warning, do not revert state). Mirror-aware behaviour described per operation for `offlineMirror: true`.
+
+The `## Backend protocol` header was updated to reflect that both backends are now documented in this file. The parenthetical at the end of `FilesBackend.isAvailable()` was updated to cross-link to the new `LinearBackend` section.
+
+Next sub-task: `/create-roadmap` extensions (sub-task #4) — backend selection prompts, Linear team selection, `.roadmap.json` write, MCP auto-install via the canonical one-liner, mirror opt-in, `.gitignore` append.
 
 ### 2026-05-22 — `FilesBackend` expressed against the contract
 
