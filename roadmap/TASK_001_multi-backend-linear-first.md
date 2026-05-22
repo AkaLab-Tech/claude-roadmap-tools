@@ -106,7 +106,7 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - [x] Implement `FilesBackend` against the new interface — see the refactored [`skills/roadmap-tracking-flow/SKILL.md`](../skills/roadmap-tracking-flow/SKILL.md). No behaviour change for current users; instructions reorganized around the six operations of the contract.
 - [x] Implement `LinearBackend` — see the new [`## Operations (LinearBackend)`](../skills/roadmap-tracking-flow/SKILL.md#operations-linearbackend) sibling section in `SKILL.md`. Covers state mapping via `linear.stateMap`, ID translation, per-operation MCP tool roles, OAuth-pending awareness in `isAvailable`, atomicity caveat for `appendHistoryEntry` (state change + comment append), and mirror-aware behaviour when `offlineMirror: true`.
 - [x] `/create-roadmap` extensions — see [`commands/create-roadmap.md`](../commands/create-roadmap.md). Adds: backend prompt (`files`/`linear`), MCP auto-install via the canonical `claude mcp add` one-liner with OAuth heads-up, Linear team selection via the MCP team-list tool (with `--team` override flag), `.roadmap.json` write (only for `backend: linear`; absence of the file still means `files`), offline-mirror prompt, idempotent `.gitignore` append (only when `.gitignore` already exists at the repo root). Refuses to reconfigure when `.roadmap.json` already exists. Extended `$ARGUMENTS` parsing for `--backend`, `--layout`, `--mirror` / `--no-mirror`, `--team`, with explicit conflict detection.
-- [ ] `/migrate-roadmap` extensions: `--to` flag, `files → linear` migration with ID write-back, "not yet implemented" stubs for other directions.
+- [x] `/migrate-roadmap` extensions — see the rewritten [`commands/migrate-roadmap.md`](../commands/migrate-roadmap.md). Adds `--to <files|linear>` flag, the `files (any layout) → linear` direction (Linear setup reused from `/create-roadmap` step 5b, push tasks bucket-by-bucket with on-the-fly layout flip for single-file sources, `backendId` write-back into each task file's frontmatter, atomic `.roadmap.json` checkpoint, mirror branch with idempotent `.gitignore` append or auto-delete of the four local artefacts when `mirror: false`), explicit Direction matrix with "not yet implemented" stubs for `linear → files`, `linear → linear`, and `files (indexed) → files (single-file)`. History entries are migrated to Linear as Done issues (full audit trail). Partial-failure semantics: stop on first push failure, list created Linear ids + unpushed tasks, do not write `.roadmap.json`, do not delete anything; auto-resume deferred to v2. `$ARGUMENTS` parsing extended for `--to`, `--mirror` / `--no-mirror`, `--team`.
 - [ ] Update the `roadmap-tracking-flow` skill: (a) read `.roadmap.json`, (b) route operations through the backend abstraction, (c) auto-refresh local mirror from Linear on activation when applicable, with safe failure mode.
 - [ ] Update `README.md` with the new backend selection flow and the offline-mirror caveats.
 - [ ] Smoke validation:
@@ -125,6 +125,25 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - Documentation lives in `README.md`, `CLAUDE.md`, or `docs/` (ADRs). Anything in `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` (and `roadmap/TASK_NNN_*.md`) is task tracking, not documentation.
 
 ## Status
+
+### 2026-05-22 — `/migrate-roadmap` extended for cross-backend migrations
+
+Sub-task #5 (`/migrate-roadmap` extensions) delivered. Rewrote [`commands/migrate-roadmap.md`](../commands/migrate-roadmap.md) to support two migration directions in v1:
+
+- **`files (single-file) → files (indexed)`** — current behavior preserved verbatim under step 5a; the legacy callers of this command keep working unchanged.
+- **`files (any layout) → linear`** — new path under step 5b. Reuses the Linear setup procedure from `/create-roadmap` step 5b (MCP install + OAuth + team picker + mirror prompt), then parses every task across the three buckets, pushes them to Linear in bucket order (history first, then in_progress, then roadmap), writes `backendId` back into each task file's frontmatter, and either keeps the local files as a mirror (with `.gitignore` append) or deletes them automatically (when `mirror: false`).
+
+Decisions confirmed with the maintainer for this PR:
+
+- **History migration policy**: history entries are pushed to Linear as Done issues, preserving full audit trail. The trade-off (Linear project starts with N closed issues) was accepted.
+- **Local files post-migration with `mirror: false`**: auto-delete at the end (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/` recursive). This destructive operation is **previewed in step 5b.3's migration plan** so the user sees it before approving the migration.
+- **Auto-flip layout for single-file source** (default I took without asking): when source is single-file and target is linear, the command builds a virtual indexed view in memory, then writes `roadmap/TASK_NNN_*.md` per task as part of the push. No separate "single-file → indexed → linear" two-step required.
+- **Partial-failure semantics** (default I took without asking): stop on first push failure, list created Linear ids + unpushed tasks, **do not write `.roadmap.json` and do not delete any local files**. Auto-resume deferred to v2.
+- **`.roadmap.json` is the atomic checkpoint**: only written after every Linear push succeeds.
+
+`$ARGUMENTS` parsing extended for `--to`, `--mirror` / `--no-mirror`, `--team`, with explicit conflict detection (e.g. `--to files --mirror` errors out). A `## Direction matrix` table documents what's supported and what errors out as "not yet implemented" so unsupported directions never silently fall back.
+
+Next sub-task: **#6 — Update the `roadmap-tracking-flow` skill** to (a) read `.roadmap.json` on activation, (b) route operations through the backend abstraction (instead of hardcoded file ops), (c) auto-refresh the local mirror from Linear on activation when `backend: linear` + `offlineMirror: true`. This is the PR that **closes the transitional gap** from sub-task #4: today, `backend: linear` with `mirror: false` does not auto-activate the skill because the activation predicate is "presence of all three tracking files". Sub-task #6 adds `.roadmap.json` presence as a third activation predicate and wires the routing layer.
 
 ### 2026-05-22 — `/create-roadmap` extended for backend selection
 
