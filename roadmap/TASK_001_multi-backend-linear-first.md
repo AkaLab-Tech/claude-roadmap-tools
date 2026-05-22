@@ -54,14 +54,14 @@ All design decisions resolved before implementation begins. No open items remain
 
 The skill `roadmap-tracking-flow` and the two slash commands talk to a single `RoadmapBackend` interface. Each backend implementation lives in its own module and is selected by the config. v1 ships two implementations: `FilesBackend` (today's behaviour) and `LinearBackend`. Future backends implement the same contract.
 
-Minimum surface (concrete signatures decided during work):
+The full contract — operation signatures, error semantics, atomicity rules, identity scheme per backend — lives in [`docs/RoadmapBackend.md`](../docs/RoadmapBackend.md). Summary of the minimum surface:
 
-- `listTasks(bucket)` — list tasks in `roadmap` / `inProgress` / `history`.
+- `listTasks(bucket)` — list tasks in `roadmap` / `in_progress` / `history`.
 - `getTask(id)` — fetch one task by canonical ID.
 - `addTask(task)` — create a new task in the `roadmap` bucket.
-- `moveTask(id, fromBucket, toBucket)` — atomic move; errors if `id` is not in `fromBucket`.
-- `appendHistoryEntry(id, prMetadata)` — log completion with PR link, delivered bullets, tests.
-- `isAvailable()` — for remote backends, check MCP connectivity without performing any mutating call.
+- `moveTask(id, fromBucket, toBucket)` — atomic move; errors if `id` is not in `fromBucket`. Moving INTO `history` is forbidden here — use `appendHistoryEntry` instead.
+- `appendHistoryEntry(id, prMetadata)` — atomic operation enforcing the pre-merge tracking rule: remove from `in_progress` and add structured entry to `history` in one shot.
+- `isAvailable()` — connectivity check; must be cheap and side-effect-free.
 
 ## Linear backend specifics
 
@@ -102,7 +102,7 @@ Minimum surface (concrete signatures decided during work):
 
 ## Sub-tasks
 
-- [ ] Design and document the `RoadmapBackend` interface (separate file in the plugin once the structure is decided).
+- [x] Design and document the `RoadmapBackend` interface — see [`docs/RoadmapBackend.md`](../docs/RoadmapBackend.md).
 - [ ] Implement `FilesBackend` against the new interface (refactor of today's logic, no behaviour change for current users).
 - [ ] Implement `LinearBackend` (state mapping, ID translation, error surfaces, OAuth-pending awareness).
 - [ ] `/create-roadmap` extensions: backend selection prompts, Linear team selection, `.roadmap.json` write, MCP auto-install via the canonical one-liner, mirror opt-in, `.gitignore` append.
@@ -126,4 +126,8 @@ Minimum surface (concrete signatures decided during work):
 
 ## Status
 
-_Not started. All design decisions resolved (see table above). Ready for implementation; sub-tasks will be picked up in follow-up PRs._
+### 2026-05-22 — Kickoff
+
+Task moved from `ROADMAP.md` to `IN_PROGRESS.md`. First sub-task delivered: the `RoadmapBackend` contract is documented in [`docs/RoadmapBackend.md`](../docs/RoadmapBackend.md). Sub-task checklist above updated. The PR opening this status note also adds a follow-up to `ROADMAP.md` Low Priority for an observation surfaced during the Test 5 smoke check of [PR #3](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/3) (skill should explicitly point at `/create-roadmap` when the flow predicate fires on a repo without tracking files, instead of letting the assistant find a substitute file).
+
+Next sub-task: refactor `skills/roadmap-tracking-flow/SKILL.md` to organize its instructions around the `RoadmapBackend` contract for `FilesBackend` (today's behaviour expressed against the new abstraction, no behaviour change for current users).
