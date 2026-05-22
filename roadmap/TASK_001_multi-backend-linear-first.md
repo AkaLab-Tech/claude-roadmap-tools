@@ -103,7 +103,7 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 ## Sub-tasks
 
 - [x] Design and document the `RoadmapBackend` interface — see [`docs/RoadmapBackend.md`](../docs/RoadmapBackend.md).
-- [ ] Implement `FilesBackend` against the new interface (refactor of today's logic, no behaviour change for current users).
+- [x] Implement `FilesBackend` against the new interface — see the refactored [`skills/roadmap-tracking-flow/SKILL.md`](../skills/roadmap-tracking-flow/SKILL.md). No behaviour change for current users; instructions reorganized around the six operations of the contract.
 - [ ] Implement `LinearBackend` (state mapping, ID translation, error surfaces, OAuth-pending awareness).
 - [ ] `/create-roadmap` extensions: backend selection prompts, Linear team selection, `.roadmap.json` write, MCP auto-install via the canonical one-liner, mirror opt-in, `.gitignore` append.
 - [ ] `/migrate-roadmap` extensions: `--to` flag, `files → linear` migration with ID write-back, "not yet implemented" stubs for other directions.
@@ -125,6 +125,12 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - Documentation lives in `README.md`, `CLAUDE.md`, or `docs/` (ADRs). Anything in `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` (and `roadmap/TASK_NNN_*.md`) is task tracking, not documentation.
 
 ## Status
+
+### 2026-05-22 — `FilesBackend` expressed against the contract
+
+Sub-task #2 (`Implement FilesBackend against the new interface`) delivered. Refactored [`skills/roadmap-tracking-flow/SKILL.md`](../skills/roadmap-tracking-flow/SKILL.md) to organize its instructions around the six operations of the `RoadmapBackend` contract (`listTasks`, `getTask`, `addTask`, `moveTask`, `appendHistoryEntry`, `isAvailable`). Behaviour is preserved verbatim — single-file vs indexed detection, the numbering convention, the pre-merge tracking rule, and every format convention stay as they were. The reorganization adds a `## Backend protocol` section pointing at [`docs/RoadmapBackend.md`](../docs/RoadmapBackend.md) as the canonical spec, and surfaces one previously-implicit rule that proved load-bearing during the Test 3 smoke check of [PR #4](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/4): in indexed layout, "what's in progress?" answers come from the task file's `## Status` section, **not** from `IN_PROGRESS.md` (which only holds the link).
+
+Next sub-task: `LinearBackend` instructions in `SKILL.md` (per-operation notes for the Linear MCP path), followed by the `/create-roadmap` and `/migrate-roadmap` command extensions.
 
 ### 2026-05-22 — Kickoff
 
