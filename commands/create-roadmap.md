@@ -70,9 +70,7 @@ Run this only at the **root of the target repository**. Do not create the files 
 
 7. **Remind the user** that the `roadmap-tracking-flow` skill auto-activates on this repo because the tracking files are now in place. Specifically:
    - For `backend: files`: the skill follows [Operations (`FilesBackend`)](../skills/roadmap-tracking-flow/SKILL.md) — see the section in `SKILL.md`.
-   - For `backend: linear`: the skill follows [Operations (`LinearBackend`)](../skills/roadmap-tracking-flow/SKILL.md) — see the section in `SKILL.md`. The first call to a Linear MCP tool (e.g. when the user asks "what's in progress?") will trigger the OAuth browser prompt if it has not already.
-
-> **Note (transitional)**: until sub-task #6 of TASK_001 ships, the skill's activation predicate is "presence of all three tracking files at the root". This means `linear` backend **with `offlineMirror: false`** does **not** yet auto-activate the skill — there are no local files for it to detect. The user can still invoke the flow by explicitly referencing it ("what is in progress?", etc.), which is the second activation predicate. Sub-task #6 will add `.roadmap.json` presence as a third predicate.
+   - For `backend: linear`: the skill follows [Operations (`LinearBackend`)](../skills/roadmap-tracking-flow/SKILL.md) — see the section in `SKILL.md`. The first call to a Linear MCP tool (e.g. when the user asks "what's in progress?") will trigger the OAuth browser prompt if it has not already. The skill activates on this repo via the `.roadmap.json`-presence activation predicate regardless of whether `offlineMirror` is on or off.
 
 ## Templates
 
@@ -201,7 +199,7 @@ Design decisions, links to issues, anything worth keeping with the task.
 
 ### `.roadmap.json` — linear backend
 
-When `backend: linear`, write the following at the repo root. Fill `linear.teamId` with the UUID picked from the Linear MCP team-list call; keep the `linear.stateMap` defaults unless the user explicitly customizes them (defaults match the workflow Linear ships for new teams).
+When `backend: linear`, write the following at the repo root. Fill `linear.teamId` with the UUID picked from the Linear MCP team-list call; keep the `linear.stateMap` and `linear.historyWindow` defaults unless the user explicitly customizes them.
 
 ```json
 {
@@ -209,6 +207,7 @@ When `backend: linear`, write the following at the repo root. Fill `linear.teamI
   "offlineMirror": false,
   "linear": {
     "teamId": "<team-uuid>",
+    "historyWindow": "90d",
     "stateMap": {
       "roadmap": ["Backlog", "Todo"],
       "inProgress": ["In Progress"],
@@ -218,7 +217,13 @@ When `backend: linear`, write the following at the repo root. Fill `linear.teamI
 }
 ```
 
-Set `offlineMirror` to whatever the user chose in step 5b.4. Do **not** write `.roadmap.json` when `backend: files` — the absence of the file is the signal for `files` mode, and the skill defaults accordingly.
+Field notes:
+
+- `offlineMirror` — set to whatever the user chose in step 5b.4.
+- `linear.stateMap` — defaults match the workflow Linear ships for new teams.
+- `linear.historyWindow` — bounds the cost of refreshing `HISTORY.md` from Linear on every skill activation. Supported values: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"` (last N entries), or `"all"` (no limit). Only meaningful with `offlineMirror: true`; harmless to leave when the mirror is off. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md) for the full semantics.
+
+Do **not** write `.roadmap.json` when `backend: files` — the absence of the file is the signal for `files` mode, and the skill defaults accordingly.
 
 ## Numbering convention (indexed layout)
 

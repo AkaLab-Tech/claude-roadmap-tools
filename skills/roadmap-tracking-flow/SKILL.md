@@ -1,6 +1,6 @@
 ---
 name: roadmap-tracking-flow
-description: Consult this skill whenever the current repository's root contains all three of `ROADMAP.md`, `IN_PROGRESS.md` and `HISTORY.md`, or when the user explicitly mentions task tracking, the roadmap, what is in progress, history of completed work, or moving a task between those files. The skill defines the flow `ROADMAP → IN_PROGRESS → HISTORY`, the pre-merge tracking rule, how to propose the next task, and the entry format for each file. It supports two layouts: single-file (everything in `ROADMAP.md`) and indexed (titles in `ROADMAP.md`, one `roadmap/TASK_NNN_<slug>.md` per task). Skip for read-only chats that do not touch tracking, for trivial edits, and once the user has declined applying it earlier in the session.
+description: Consult this skill whenever the current repository's root contains all three of `ROADMAP.md`, `IN_PROGRESS.md` and `HISTORY.md`, OR a `.roadmap.json` config file (any backend), OR the user explicitly mentions task tracking, the roadmap, what is in progress, history of completed work, or moving a task between those files. The skill defines the flow `ROADMAP → IN_PROGRESS → HISTORY`, the pre-merge tracking rule, how to propose the next task, and the entry format for each file. It supports two backends — `files` (markdown at the repo root, single-file or indexed layout) and `linear` (Linear issues via the Linear MCP, optional offline mirror with auto-refresh on activation). Skip for read-only chats that do not touch tracking, for trivial edits, and once the user has declined applying it earlier in the session.
 ---
 
 # roadmap-tracking-flow skill
@@ -22,12 +22,15 @@ The plugin is 100% markdown — the contract is a specification the skill follow
 
 ## When this skill applies
 
-Activate the rules below when **either**:
+Activate the rules below when **any** of:
 
 1. The current repository's root contains **all three** of `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, **or**
-2. The user explicitly references the flow ("move this to HISTORY", "what is in progress?", "next task from the roadmap", "log this PR").
+2. The current repository's root contains a `.roadmap.json` config file (any backend — `files` or `linear`), **or**
+3. The user explicitly references the flow ("move this to HISTORY", "what is in progress?", "next task from the roadmap", "log this PR").
 
-Otherwise, leave it alone — do not invent these files, and do not suggest the flow on repos that do not use it. If the user asks to set the flow up on a repo that does not yet have it, point them at `/create-roadmap`.
+Predicate 2 covers the `backend: "linear"` + `offlineMirror: false` setup where there are no local tracking files at the repo root: the `.roadmap.json` is the only on-disk evidence of the flow. Without predicate 2, the skill would silently not activate for those repos until the user explicitly invoked the flow.
+
+Otherwise, leave it alone — do not invent these files, do not invent `.roadmap.json`, and do not suggest the flow on repos that do not use it. If the user asks to set the flow up on a repo that does not yet have it, point them at `/create-roadmap`.
 
 ## Layouts: single-file vs indexed
 
@@ -37,6 +40,25 @@ Detect which layout the repo uses **before** acting:
 - **Single-file layout** — no `roadmap/` folder. `ROADMAP.md` itself contains both titles and full descriptions. `IN_PROGRESS.md` holds the active task content directly (checkboxes, sub-stories, etc.).
 
 When unsure, run a quick check: list the repo root and look for `roadmap/`. Pick the layout that matches; do not mix them in the same operation.
+
+## Activation: detecting the active backend
+
+On every skill activation, run the detection in this order **before** answering the user's prompt:
+
+1. **Look for `.roadmap.json`** at the repo root.
+   - **Present**: read it. The `backend` field decides which Operations section to follow:
+     - `backend: "files"` → use [Operations (`FilesBackend`)](#operations-filesbackend).
+     - `backend: "linear"` → use [Operations (`LinearBackend`)](#operations-linearbackend).
+     The `offlineMirror` field decides whether the [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) applies — only meaningful for `linear` (and any future remote backend), ignored for `files`.
+   - **Absent**: source backend is implicitly `files` (the default). Use [Operations (`FilesBackend`)](#operations-filesbackend).
+
+2. **For `files` backend**, detect the layout (single-file vs indexed) as documented in [Layouts: single-file vs indexed](#layouts-single-file-vs-indexed) above. The chosen layout governs how each operation reads and writes files.
+
+3. **For `linear` backend with `offlineMirror: true`**, run the mirror auto-refresh (see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below) **before** answering the user's prompt. The refresh is part of activation, not a separate step the user invokes.
+
+4. **For `linear` backend with `offlineMirror: false`**, no local files exist (the repo is Linear-only). All operations route through `LinearBackend` and execute against Linear in real-time. No refresh step is needed because there is no mirror to refresh.
+
+Once the backend (and, for files, the layout) is decided, the rest of this skill — [the flow](#the-flow), [the pre-merge tracking rule](#pre-merge-tracking-rule-load-bearing), the chosen Operations section, and the format conventions — applies as documented. The detection above is the routing layer; everything else is the per-backend implementation.
 
 ## The flow
 
@@ -346,7 +368,80 @@ For `LinearBackend`, `isAvailable()` returns `true` iff a Linear MCP server is r
 
 **Must not** issue any Linear API call — doing so would trigger the OAuth browser flow on first-ever invocation, violating the contract's "no side effects" rule for `isAvailable`.
 
-When `isAvailable()` returns `false`, the skill surfaces this error to the user (and `/create-roadmap` re-suggests the install command). Operations that depend on the Linear MCP throw `backend-unavailable` when called against an unavailable backend.
+When `isAvailable()` returns `false`, the skill surfaces this error to the user (and `/create-roadmap` re-suggests the install command). Operations that depend on the Linear MCP throw `backend-unavailable` when called against an unavailable backend. For the activation-time behaviour when `isAvailable()` returns `false`, see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below — the skill falls back gracefully to the existing local snapshot rather than refusing to activate.
+
+## Mirror auto-refresh on activation
+
+Applies when **all** of:
+
+- `.roadmap.json` exists at the repo root.
+- It declares `backend: "linear"` (or, in the future, any other remote backend).
+- It declares `offlineMirror: true`.
+
+On every skill activation in such a repo, the skill performs a mirror refresh **before** answering the user's prompt. This implements decision 8 in [TASK_001](../../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions): "automatic on skill activation; no background polling, no explicit `/refresh-roadmap` command in v1."
+
+### Refresh procedure
+
+1. **Pre-check the backend's availability**: call `LinearBackend.isAvailable()` (see [`isAvailable()` under Operations (LinearBackend)](#isavailable--connectivity-check)).
+
+2. **If `isAvailable()` returns `false`** (Linear MCP not registered or not reachable):
+   - **Do not** attempt the refresh.
+   - **Fall back to the existing local snapshot**: the user can still read `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, and every `roadmap/TASK_NNN_*.md` as they were at the last successful refresh.
+   - **Surface a clear warning** at the start of the answer, naming the snapshot age and the install / reconnection command. Example:
+     > _Linear MCP unreachable; showing the mirror snapshot from 2026-05-22 14:31. To restore: re-run `claude mcp add --transport http linear-server https://mcp.linear.app/mcp` (or check your network). Read-only operations work against the snapshot; write operations (`addTask`, `moveTask`, `appendHistoryEntry`) will throw `backend-unavailable` until the MCP is restored._
+   - Activation continues — the skill is still useful for reading the snapshot.
+
+3. **If `isAvailable()` returns `true`**, perform the refresh in this order:
+   1. Call `listTasks("roadmap")` against `LinearBackend`. Regenerate the index lines in `ROADMAP.md`, plus any new `roadmap/TASK_NNN_*.md` files for issues that do not yet have a local file.
+   2. Call `listTasks("in_progress")`. Regenerate the link lines in `IN_PROGRESS.md`.
+   3. Call `listTasks("history")` **scoped by the history window** (see below). Regenerate the matching `HISTORY.md` entries.
+
+4. **Coherence rules** (per decision 3 in [TASK_001](../../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions)):
+   - Match local task files to remote issues by `backendId` in YAML frontmatter, **not** by title or slug.
+   - New remote issues that have no matching local file get new `roadmap/TASK_NNN_*.md` files with the next sequential `TASK_NNN` (per the [Numbering convention](../../commands/create-roadmap.md) — never reuse numbers).
+   - Local task files whose `backendId` no longer exists remotely are **flagged in the warning** at the start of the answer (`TASK_042 — backendId ENG-123 no longer exists in Linear; left in place for review`) but **not auto-deleted**. The user decides whether to remove them.
+
+5. **Safe failure mode**:
+   - If any individual `listTasks` call fails mid-refresh, **stop that bucket's refresh** and keep the previous local snapshot for that bucket intact. Do **not** half-write the bucket's files.
+   - Refresh of other buckets that already completed successfully stays applied.
+   - Surface the partial-refresh state clearly: name the buckets that succeeded vs failed, and the underlying error per failed bucket.
+
+### History window
+
+The `history` bucket can grow large over a long-running Linear project. To bound the cost of refreshing it on every activation, `listTasks("history")` is **scoped by default to the last 90 days** of issues whose state is in `linear.stateMap.history`. Users override this via `linear.historyWindow` in `.roadmap.json`:
+
+```json
+{
+  "backend": "linear",
+  "offlineMirror": true,
+  "linear": {
+    "teamId": "<team-uuid>",
+    "historyWindow": "90d",
+    "stateMap": {
+      "roadmap": ["Backlog", "Todo"],
+      "inProgress": ["In Progress"],
+      "history": ["Done", "Cancelled"]
+    }
+  }
+}
+```
+
+Supported `historyWindow` values:
+
+| Value | Meaning |
+| :--- | :--- |
+| `"90d"` (default if omitted) | Issues whose completion date is within the last 90 days. |
+| `"30d"`, `"180d"`, `"365d"`, etc. | Same shape, different window. |
+| `"50"` (any bare integer) | The last N entries by completion date, regardless of age. |
+| `"all"` | No limit; pull every history issue. Use only on small projects — refresh cost scales with project age. |
+
+Issues older than the window remain accessible via `getTask(id)` on-demand — `getTask` always fetches a single issue from Linear regardless of window. The window only bounds the refresh's `listTasks("history")` call.
+
+### What is **not** refreshed
+
+- **Local task file bodies that were modified by the refresh's own previous run**: this is fine, the next refresh will overwrite them again. The contract is read-only mirror; user-edited content is not preserved (decision 7).
+- **`.roadmap.json`**: never modified by the refresh. The config is the user's choice, not Linear's.
+- **`.gitignore`**: never modified by the refresh. `.gitignore` is touched only at `/create-roadmap` / `/migrate-roadmap` time.
 
 ## Format conventions
 
