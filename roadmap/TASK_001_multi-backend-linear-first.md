@@ -37,6 +37,7 @@ All design decisions resolved before implementation begins. No open items remain
   "offlineMirror": false,
   "linear": {
     "teamId": "<team-uuid>",
+    "historyWindow": "90d",
     "stateMap": {
       "roadmap":    ["Backlog", "Todo"],
       "inProgress": ["In Progress"],
@@ -49,6 +50,7 @@ All design decisions resolved before implementation begins. No open items remain
 - `backend` is required. Anything other than `"files"` requires the matching sub-object (`linear` for `"linear"`).
 - `offlineMirror` defaults to `false`. Ignored when `backend` is `"files"` (the files *are* the source of truth).
 - `linear.stateMap` lets users customize which Linear states correspond to each bucket — Linear workflows vary by team.
+- `linear.historyWindow` bounds the cost of refreshing `HISTORY.md` from Linear on every skill activation (only meaningful with `offlineMirror: true`). Defaults to `"90d"`. Supported values: any `"<N>d"`, a bare integer like `"50"` (last N entries), or `"all"` (no limit). Added in sub-task #6 to avoid pulling thousands of historical issues per session on long-running projects. Issues outside the window remain accessible via `getTask(id)` on-demand.
 
 ## Backend abstraction
 
@@ -107,7 +109,7 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - [x] Implement `LinearBackend` — see the new [`## Operations (LinearBackend)`](../skills/roadmap-tracking-flow/SKILL.md#operations-linearbackend) sibling section in `SKILL.md`. Covers state mapping via `linear.stateMap`, ID translation, per-operation MCP tool roles, OAuth-pending awareness in `isAvailable`, atomicity caveat for `appendHistoryEntry` (state change + comment append), and mirror-aware behaviour when `offlineMirror: true`.
 - [x] `/create-roadmap` extensions — see [`commands/create-roadmap.md`](../commands/create-roadmap.md). Adds: backend prompt (`files`/`linear`), MCP auto-install via the canonical `claude mcp add` one-liner with OAuth heads-up, Linear team selection via the MCP team-list tool (with `--team` override flag), `.roadmap.json` write (only for `backend: linear`; absence of the file still means `files`), offline-mirror prompt, idempotent `.gitignore` append (only when `.gitignore` already exists at the repo root). Refuses to reconfigure when `.roadmap.json` already exists. Extended `$ARGUMENTS` parsing for `--backend`, `--layout`, `--mirror` / `--no-mirror`, `--team`, with explicit conflict detection.
 - [x] `/migrate-roadmap` extensions — see the rewritten [`commands/migrate-roadmap.md`](../commands/migrate-roadmap.md). Adds `--to <files|linear>` flag, the `files (any layout) → linear` direction (Linear setup reused from `/create-roadmap` step 5b, push tasks bucket-by-bucket with on-the-fly layout flip for single-file sources, `backendId` write-back into each task file's frontmatter, atomic `.roadmap.json` checkpoint, mirror branch with idempotent `.gitignore` append or auto-delete of the four local artefacts when `mirror: false`), explicit Direction matrix with "not yet implemented" stubs for `linear → files`, `linear → linear`, and `files (indexed) → files (single-file)`. History entries are migrated to Linear as Done issues (full audit trail). Partial-failure semantics: stop on first push failure, list created Linear ids + unpushed tasks, do not write `.roadmap.json`, do not delete anything; auto-resume deferred to v2. `$ARGUMENTS` parsing extended for `--to`, `--mirror` / `--no-mirror`, `--team`.
-- [ ] Update the `roadmap-tracking-flow` skill: (a) read `.roadmap.json`, (b) route operations through the backend abstraction, (c) auto-refresh local mirror from Linear on activation when applicable, with safe failure mode.
+- [x] Update the `roadmap-tracking-flow` skill — see the updated [`skills/roadmap-tracking-flow/SKILL.md`](../skills/roadmap-tracking-flow/SKILL.md). Adds: (a) `.roadmap.json` presence as a third activation predicate (closes the transitional gap from sub-task #4 — `linear` + `offlineMirror: false` now auto-activates), (b) new `## Activation: detecting the active backend` section that describes the runtime routing layer (read `.roadmap.json` → pick FilesBackend or LinearBackend → for linear+mirror also run the auto-refresh), and (c) new `## Mirror auto-refresh on activation` section with the refresh procedure, coherence rules, safe failure mode (graceful fallback to local snapshot + warning when MCP is unavailable; per-bucket atomicity if a refresh call fails mid-flow), and the new `linear.historyWindow` knob to bound the cost of refreshing `HISTORY.md` on long-running projects (default `"90d"`).
 - [ ] Update `README.md` with the new backend selection flow and the offline-mirror caveats.
 - [ ] Smoke validation:
   - Happy path: clean repo → `/create-roadmap --backend linear` → tasks appear in Linear; mirror enabled → files appear locally with `backend: linear` + `backendId` set.
@@ -125,6 +127,25 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - Documentation lives in `README.md`, `CLAUDE.md`, or `docs/` (ADRs). Anything in `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` (and `roadmap/TASK_NNN_*.md`) is task tracking, not documentation.
 
 ## Status
+
+### 2026-05-23 — Skill runtime routing + mirror auto-refresh on activation
+
+Sub-task #6 (`Update the roadmap-tracking-flow skill`) delivered. Three frentes resueltos en [`skills/roadmap-tracking-flow/SKILL.md`](../skills/roadmap-tracking-flow/SKILL.md):
+
+1. **Third activation predicate** added in `## When this skill applies`: `.roadmap.json` presence at the repo root now also triggers the skill. This **closes the transitional gap** noted in PR #7 (sub-task #4): `backend: linear` + `offlineMirror: false` repos that had no local tracking files were previously invisible to the auto-activation flow. The skill's `description` frontmatter was also updated so Claude Code's skill-picker text matches the new behaviour.
+2. **Runtime routing layer** documented in a new `## Activation: detecting the active backend` section. On every activation: read `.roadmap.json` (or default to `files` if absent) → pick the matching Operations section → for `linear + mirror`, run the auto-refresh as part of activation. Layout detection for files is unchanged.
+3. **Mirror auto-refresh on activation** documented in a new `## Mirror auto-refresh on activation` section. Covers:
+   - **Pre-check via `isAvailable()`** (no API call → no OAuth trigger).
+   - **Graceful fallback** when MCP unreachable: skill still activates, reads the existing local snapshot, surfaces a clear warning with snapshot timestamp + reconnection command. Read-only operations work against the snapshot; writes throw `backend-unavailable` until MCP is restored. (Decision confirmed with the maintainer for this PR.)
+   - **Refresh procedure**: `listTasks` per bucket in order (roadmap → in_progress → history), regenerate local files, match by `backendId` (decision 3), flag orphan local task files without deleting (user decides).
+   - **Per-bucket atomicity**: if a `listTasks` call fails, that bucket's local files keep the previous snapshot; other buckets' refreshes that already completed stay applied; surface partial-state clearly.
+   - **History window** to bound refresh cost on long-running projects: new `linear.historyWindow` config knob, defaults to `"90d"`, supports `"<N>d"`, bare integer (`"50"`), or `"all"`. (Decision confirmed with the maintainer.) Issues outside the window stay accessible via `getTask(id)` on-demand — the contract is unchanged.
+
+Schema extension in this PR: `linear.historyWindow` added to the config schema in this task file, in [`docs/RoadmapBackend.md`](../docs/RoadmapBackend.md) LinearBackend notes, and in the `.roadmap.json` template inside [`commands/create-roadmap.md`](../commands/create-roadmap.md). The three are kept in sync.
+
+Bundled cleanup: removed the obsolete "transitional note" from [`commands/create-roadmap.md`](../commands/create-roadmap.md) step 7 that warned the skill didn't yet auto-activate on `linear + no mirror` — that warning is no longer true after this PR. Replaced with a one-sentence positive confirmation. (Decision confirmed with the maintainer.)
+
+Next sub-tasks: **#7 — README update** (the install / Quick start sections need to mention backend selection + Linear option), then **#8 — smoke validation** (the matrix originally listed in this task; some items already covered ad-hoc during sub-tasks 4/5/6 reviews, but a structured pass is still owed).
 
 ### 2026-05-23 — Spec-gap fix: orphan-`backendId` precondition check
 

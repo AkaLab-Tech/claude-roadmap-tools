@@ -157,6 +157,7 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - Identity: Linear issue ID (e.g. `ENG-123`).
 - State mapping: `linear.stateMap` in `.roadmap.json`. Defaults shipped: `roadmap: ["Backlog", "Todo"]`, `inProgress: ["In Progress"]`, `history: ["Done", "Cancelled"]`. Users override per team.
 - Team selection: `linear.teamId` in `.roadmap.json`. `/create-roadmap` writes this during setup.
+- History window for refresh: `linear.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Bounds the cost of `listTasks("history")` on every skill activation. Supported values: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"` (last N entries), or `"all"` (no limit). Issues outside the window remain accessible via `getTask(id)` on-demand. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md) for the full semantics.
 - Offline mirror: when `offlineMirror: true`, the skill maintains the four local paths (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`) as a one-way read-only mirror of Linear's state. The mirror refreshes automatically every time the skill activates. See [TASK_001 — Offline mirror semantics](../roadmap/TASK_001_multi-backend-linear-first.md#offline-mirror-semantics).
 
 ### Future backends
