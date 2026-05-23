@@ -110,7 +110,7 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - [x] `/create-roadmap` extensions — see [`commands/create-roadmap.md`](../commands/create-roadmap.md). Adds: backend prompt (`files`/`linear`), MCP auto-install via the canonical `claude mcp add` one-liner with OAuth heads-up, Linear team selection via the MCP team-list tool (with `--team` override flag), `.roadmap.json` write (only for `backend: linear`; absence of the file still means `files`), offline-mirror prompt, idempotent `.gitignore` append (only when `.gitignore` already exists at the repo root). Refuses to reconfigure when `.roadmap.json` already exists. Extended `$ARGUMENTS` parsing for `--backend`, `--layout`, `--mirror` / `--no-mirror`, `--team`, with explicit conflict detection.
 - [x] `/migrate-roadmap` extensions — see the rewritten [`commands/migrate-roadmap.md`](../commands/migrate-roadmap.md). Adds `--to <files|linear>` flag, the `files (any layout) → linear` direction (Linear setup reused from `/create-roadmap` step 5b, push tasks bucket-by-bucket with on-the-fly layout flip for single-file sources, `backendId` write-back into each task file's frontmatter, atomic `.roadmap.json` checkpoint, mirror branch with idempotent `.gitignore` append or auto-delete of the four local artefacts when `mirror: false`), explicit Direction matrix with "not yet implemented" stubs for `linear → files`, `linear → linear`, and `files (indexed) → files (single-file)`. History entries are migrated to Linear as Done issues (full audit trail). Partial-failure semantics: stop on first push failure, list created Linear ids + unpushed tasks, do not write `.roadmap.json`, do not delete anything; auto-resume deferred to v2. `$ARGUMENTS` parsing extended for `--to`, `--mirror` / `--no-mirror`, `--team`.
 - [x] Update the `roadmap-tracking-flow` skill — see the updated [`skills/roadmap-tracking-flow/SKILL.md`](../skills/roadmap-tracking-flow/SKILL.md). Adds: (a) `.roadmap.json` presence as a third activation predicate (closes the transitional gap from sub-task #4 — `linear` + `offlineMirror: false` now auto-activates), (b) new `## Activation: detecting the active backend` section that describes the runtime routing layer (read `.roadmap.json` → pick FilesBackend or LinearBackend → for linear+mirror also run the auto-refresh), and (c) new `## Mirror auto-refresh on activation` section with the refresh procedure, coherence rules, safe failure mode (graceful fallback to local snapshot + warning when MCP is unavailable; per-bucket atomicity if a refresh call fails mid-flow), and the new `linear.historyWindow` knob to bound the cost of refreshing `HISTORY.md` on long-running projects (default `"90d"`).
-- [ ] Update `README.md` with the new backend selection flow and the offline-mirror caveats.
+- [x] Update `README.md` with the new backend selection flow and the offline-mirror caveats — see [`README.md`](../README.md). Adds: activation predicates summary (3 instead of 2), Linear quickstart alongside the files quickstart, new `## Backends` section with one sub-section per backend, full `.roadmap.json` example with field notes (`teamId`, `stateMap`, `historyWindow`, `offlineMirror`), mention of the graceful-fallback behaviour when the Linear MCP is unreachable, layouts-at-a-glance updated to clarify that linear+mirror uses the indexed layout. Design rationale section reframed to include the multi-backend extension (TASK_001) alongside the original extraction (atelier M1.6). No version bump in `plugin.json` — deferred to sub-task #8's final commit when TASK_001 closes.
 - [ ] Smoke validation:
   - Happy path: clean repo → `/create-roadmap --backend linear` → tasks appear in Linear; mirror enabled → files appear locally with `backend: linear` + `backendId` set.
   - MCP missing: same flow → plugin auto-installs MCP via the canonical command, warns about OAuth.
@@ -127,6 +127,25 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - Documentation lives in `README.md`, `CLAUDE.md`, or `docs/` (ADRs). Anything in `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` (and `roadmap/TASK_NNN_*.md`) is task tracking, not documentation.
 
 ## Status
+
+### 2026-05-23 — `README.md` updated for multi-backend
+
+Sub-task #7 delivered. Reworked [`README.md`](../README.md) to reflect everything that landed in sub-tasks #1–#6. Concretely:
+
+- **Intro**: now mentions both backends and the optional Linear-backend offline mirror.
+- **"It packages"** bullets: reframed `/create-roadmap`, `/migrate-roadmap`, and the skill to describe their multi-backend behaviour. Added a 3-predicate activation summary.
+- **Install**: unchanged shape, but the surrounding text is consistent with the new world.
+- **Quick start**: split into two sub-sections, `files` (legacy default, same as before) and `linear` (six steps covering the full MCP-install + OAuth + team-pick + mirror prompt flow).
+- **New `## Backends` section**: dedicated sub-section per backend, with a complete `.roadmap.json` example and field-by-field notes (including `linear.historyWindow`'s supported values).
+- **Layouts at a glance**: ASCII diagram annotated to clarify that the linear+mirror case uses the indexed layout.
+- **Design rationale**: reframed to include TASK_001 (the multi-backend extension) alongside the original `atelier` PR #10 extraction, with the dogfooding angle explicit.
+
+Maintainer-confirmed decisions captured during this PR:
+
+- **Linear framing**: presented as a first-class backend, no "experimental" disclaimer. Smoke validation pending (sub-task #8) but the spec and code are complete.
+- **No version bump**: `plugin.json` stays at `0.1.0` in this PR. The bump to `0.2.0` lands in the final commit that closes TASK_001 (sub-task #8) for symbolic alignment.
+
+Last remaining sub-task: **#8 — Smoke validation matrix**. That PR will close TASK_001 entirely, moving it from `IN_PROGRESS.md` to `HISTORY.md` per the plugin's own pre-merge tracking rule.
 
 ### 2026-05-23 — Skill runtime routing + mirror auto-refresh on activation
 
