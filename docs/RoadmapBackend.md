@@ -46,6 +46,8 @@ Three abstract buckets — backends map each one to native concepts:
 | `in_progress` | Active work. Tasks moved here when work actually begins. | `IN_PROGRESS.md`. | States matching `linear.stateMap.inProgress` (default: `In Progress`). |
 | `history` | Completed work, append-only log. | `HISTORY.md`, newest first, grouped by `## YYYY-MM`. | States matching `linear.stateMap.history` (defaults: `Done`, `Cancelled`). |
 
+> **⚠ Naming convention — bucket names vs JSON config keys.** Bucket names in operation arguments use snake_case (`roadmap`, `in_progress`, `history`). The matching JSON config keys in `.roadmap.json`'s `linear.stateMap` use camelCase (`roadmap`, `inProgress`, `history`). **The mapping is fixed**: bucket `roadmap` ↔ field `linear.stateMap.roadmap`, bucket `in_progress` ↔ field `linear.stateMap.inProgress`, bucket `history` ↔ field `linear.stateMap.history`. This mismatch is intentional: snake_case reads better as a programmatic identifier inside operations, camelCase matches JSON conventions for config. Implementations of any backend (including the LinearBackend `listTasks`, `moveTask`, etc.) **must** translate from the snake_case bucket argument to the camelCase config key when looking up state names. The skill's `## Mirror auto-refresh on activation` section in `SKILL.md` performs this translation explicitly; new backends must do the same.
+
 ### Task representation
 
 A task carries at least: `id`, `title`, `body`. Implementations may include `priority` and backend-specific metadata.

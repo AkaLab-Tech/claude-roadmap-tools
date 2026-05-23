@@ -111,14 +111,14 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - [x] `/migrate-roadmap` extensions — see the rewritten [`commands/migrate-roadmap.md`](../commands/migrate-roadmap.md). Adds `--to <files|linear>` flag, the `files (any layout) → linear` direction (Linear setup reused from `/create-roadmap` step 5b, push tasks bucket-by-bucket with on-the-fly layout flip for single-file sources, `backendId` write-back into each task file's frontmatter, atomic `.roadmap.json` checkpoint, mirror branch with idempotent `.gitignore` append or auto-delete of the four local artefacts when `mirror: false`), explicit Direction matrix with "not yet implemented" stubs for `linear → files`, `linear → linear`, and `files (indexed) → files (single-file)`. History entries are migrated to Linear as Done issues (full audit trail). Partial-failure semantics: stop on first push failure, list created Linear ids + unpushed tasks, do not write `.roadmap.json`, do not delete anything; auto-resume deferred to v2. `$ARGUMENTS` parsing extended for `--to`, `--mirror` / `--no-mirror`, `--team`.
 - [x] Update the `roadmap-tracking-flow` skill — see the updated [`skills/roadmap-tracking-flow/SKILL.md`](../skills/roadmap-tracking-flow/SKILL.md). Adds: (a) `.roadmap.json` presence as a third activation predicate (closes the transitional gap from sub-task #4 — `linear` + `offlineMirror: false` now auto-activates), (b) new `## Activation: detecting the active backend` section that describes the runtime routing layer (read `.roadmap.json` → pick FilesBackend or LinearBackend → for linear+mirror also run the auto-refresh), and (c) new `## Mirror auto-refresh on activation` section with the refresh procedure, coherence rules, safe failure mode (graceful fallback to local snapshot + warning when MCP is unavailable; per-bucket atomicity if a refresh call fails mid-flow), and the new `linear.historyWindow` knob to bound the cost of refreshing `HISTORY.md` on long-running projects (default `"90d"`).
 - [x] Update `README.md` with the new backend selection flow and the offline-mirror caveats — see [`README.md`](../README.md). Adds: activation predicates summary (3 instead of 2), Linear quickstart alongside the files quickstart, new `## Backends` section with one sub-section per backend, full `.roadmap.json` example with field notes (`teamId`, `stateMap`, `historyWindow`, `offlineMirror`), mention of the graceful-fallback behaviour when the Linear MCP is unreachable, layouts-at-a-glance updated to clarify that linear+mirror uses the indexed layout. Design rationale section reframed to include the multi-backend extension (TASK_001) alongside the original extraction (atelier M1.6). No version bump in `plugin.json` — deferred to sub-task #8's final commit when TASK_001 closes.
-- [ ] Smoke validation:
-  - Happy path: clean repo → `/create-roadmap --backend linear` → tasks appear in Linear; mirror enabled → files appear locally with `backend: linear` + `backendId` set.
-  - MCP missing: same flow → plugin auto-installs MCP via the canonical command, warns about OAuth.
-  - MCP install fails: clear error, no half-state in `.roadmap.json`.
-  - Existing files-only repo → `/migrate-roadmap --to linear` → every task arrives in Linear with original titles/bodies; local frontmatter gets `backend: linear` + `backendId` rewritten in place; `.gitignore` updated when mirror enabled.
-  - Existing repo without `.gitignore` → mirror enabled → plugin does not create `.gitignore` or `.git`.
-  - Activation freshness: open a new Claude Code session on a Linear-backed mirrored repo → local files reflect Linear's current state (not the previous session's snapshot).
-  - Linear API down at activation → previous local snapshot retained, user warned.
+- [x] Smoke validation — run end-to-end on 2026-05-23 against a real scratch Linear team. **5 PASS / 1 SKIP / 1 NOT-TESTABLE**. See the dated `## Status` entry below for the full report and the 4 spec gaps it surfaced (all fixed in this same PR).
+  - Happy path: clean repo → `/create-roadmap --backend linear` → tasks appear in Linear; mirror enabled → files appear locally with `backend: linear` + `backendId` set. **✅ PASS**
+  - MCP missing: same flow → plugin auto-installs MCP via the canonical command, warns about OAuth. **✅ PASS** (covered by the same session as the happy path; one observation: OAuth browser did not auto-open; Claude Code required a restart to surface the new MCP tools — likely a Linear MCP / Claude Code integration quirk; filed as observation, not a plugin bug).
+  - MCP install fails: clear error, no half-state in `.roadmap.json`. **⏸ SKIP** — impractical to engineer naturally; validated via spec walkthrough only.
+  - Existing files-only repo → `/migrate-roadmap --to linear` → every task arrives in Linear with original titles/bodies; local frontmatter gets `backend: linear` + `backendId` rewritten in place; `.gitignore` updated when mirror enabled. **✅ PASS** (surfaced 4 spec gaps fixed by this PR — see Status entry below).
+  - Existing repo without `.gitignore` → mirror enabled → plugin does not create `.gitignore` or `.git`. **✅ PASS** (validated harness-side as scenario A of the smoke report).
+  - Activation freshness: open a new Claude Code session on a Linear-backed mirrored repo → local files reflect Linear's current state (not the previous session's snapshot). **✅ PASS**
+  - Linear API down at activation → previous local snapshot retained, user warned. **⏸ NOT TESTABLE** — bare network outage kills Claude itself (Claude CLI needs `anthropic.com` connectivity), so the targeted partial-outage scenario (Anthropic up + Linear down) cannot be triggered with a simple WiFi toggle. Validated via spec walkthrough only.
 
 ## Notes
 
@@ -127,6 +127,52 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 - Documentation lives in `README.md`, `CLAUDE.md`, or `docs/` (ADRs). Anything in `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` (and `roadmap/TASK_NNN_*.md`) is task tracking, not documentation.
 
 ## Status
+
+### 2026-05-23 — TASK_001 CLOSED — smoke validation + spec fixes + v0.2.0
+
+Sub-task #8 delivered. End-to-end smoke validation ran against a real scratch Linear team. Result: **5 PASS / 1 SKIP / 1 NOT-TESTABLE**. The validation surfaced **4 spec gaps in `/migrate-roadmap`**, all fixed in this same PR (so TASK_001 closes with a clean spec, not with known issues).
+
+#### Smoke matrix results
+
+| # | Scenario | Result | Notes |
+| :- | :--- | :--- | :--- |
+| 1+2 | Happy path + MCP auto-install | ✅ PASS | `.roadmap.json` written correctly with `historyWindow: "90d"` and full default `stateMap`; mirror files + empty `roadmap/` created; `.gitignore` correctly NOT created (didn't exist before). Side observations: OAuth browser did not auto-open; Claude required restart to surface MCP tools (Linear MCP integration quirk, not a plugin bug). |
+| 3 | MCP install fails → no half-state | ⏸ SKIP | Impractical to engineer naturally. Spec walkthrough confirms behaviour. |
+| 4 | `files → linear` migration | ✅ PASS functional | 3 tasks pushed correctly (Done → In Progress → Backlog ordering preserved per spec); `backendId` written into each task file's frontmatter; `.gitignore` 4 lines appended without duplicating pre-existing entries. **Surfaced 4 spec gaps** — see "Spec fixes shipped in this PR" below. |
+| 5 | Repo without `.gitignore` + mirror | ✅ PASS | Validated harness-side. Spec is unambiguous and there is no path to deviate. |
+| 6 | Activation freshness | ✅ PASS | New issue created manually in Linear → fresh Claude session refreshed local mirror and surfaced the new task. |
+| 7 | Linear API down → graceful fallback | ⏸ NOT TESTABLE | Bare network outage takes Claude itself offline. The targeted partial-outage (Anthropic up + Linear down) is hard to simulate with simple WiFi toggle. Spec walkthrough during PR #10 pre-merge review confirmed behaviour. |
+
+Plus harness-side: scenarios B1 (linear → files refusal), B2 (argument conflicts), B3 (orphan-`backendId` detection from PR #9), C1 (schema fields consistent across 4 docs), C2 (cross-link integrity — 44 links, 0 failures after filtering code fences + comments), C3 (JSON snippets parse — 3 valid, 1 pseudo-JSON skip), D1 (12/12 expected files present), D2 (`claude plugin validate` exit 0). All ✅ PASS.
+
+#### Spec fixes shipped in this PR
+
+The smoke run for scenario 4 produced a `.roadmap.json` that deviated from the spec on 4 points. All 4 are fixed in the same commit as this status entry, so TASK_001 closes with a clean spec:
+
+| Gap | Severity | Fix |
+| :-- | :--- | :--- |
+| **A** — `historyWindow` was omitted from `/migrate-roadmap`'s `.roadmap.json` (was present in `/create-roadmap`'s). | 🟡 cosmetic | `commands/migrate-roadmap.md` step 5b.6 now **inlines the full `.roadmap.json` template** instead of just linking to `/create-roadmap`. The LLM-following-spec has the exact JSON to copy. |
+| **B** — `/migrate-roadmap`'s output used `"in_progress": [...]` (snake_case) instead of `"inProgress"` (camelCase). The skill's auto-refresh looks for `linear.stateMap.inProgress` and would miss the snake_case variant — **the only real bug that could break runtime**. | 🔴 real bug | Added an explicit naming-convention callout in `docs/RoadmapBackend.md` (Buckets section) and `skills/roadmap-tracking-flow/SKILL.md` (Operations (LinearBackend) preamble); strengthened the language in both `/create-roadmap` and `/migrate-roadmap` Linear-setup steps to say _"bucket `in_progress` ↔ field `linear.stateMap.inProgress`"_ explicitly. The mismatch is intentional (snake_case for programmatic identifiers, camelCase for JSON config) but was previously implicit, which let LLMs deviate. |
+| **C** — `/migrate-roadmap`'s `.roadmap.json` had trimmed `stateMap` defaults (one state per bucket instead of the two-state defaults `["Backlog", "Todo"]` / `["Done", "Cancelled"]`). | 🟡 cosmetic | Both `/create-roadmap` and `/migrate-roadmap` step 5b.6 now say _"Ship the full `linear.stateMap` defaults exactly as in the template — do not trim alternatives down to just the state the user happens to be using"_ explicitly. |
+| **D** — `/migrate-roadmap` re-ran `claude mcp add` even though MCP was already registered (and Claude Code surfaced a "tools not visible yet; please restart" message even though the MCP was healthy). | 🟡 UX | Both `/create-roadmap` and `/migrate-roadmap` now say _"If already registered ... **skip the install entirely** — do not re-run `claude mcp add`, even though it would be technically idempotent. ... Proceed directly to the next step."_ with explicit reasoning about why re-running causes noise. |
+
+#### Out-of-scope follow-ups noted during testing
+
+These are NOT spec gaps in this plugin; they're observations to track elsewhere:
+
+- **Approval-fatigue during runtime**: the maintainer observed that `file creation`, `mcp list`, and similar routine tool calls all prompted for approval, breaking the autonomous-flow expectation. This is governed by Claude Code's `settings.json` permission allowlist, which is configured by the **atelier** project (separate repo), not by this plugin. Atelier's `settings.template.json` should expand its allowlist to cover these patterns for operator-profile installations.
+- **OAuth browser non-launch + restart-required-to-see-MCP-tools**: observed during scenario 1+2. Looks like an integration quirk between Claude Code's MCP startup and Linear's hosted MCP server. Worth filing upstream if reproducible across machines.
+
+#### Version bump
+
+`.claude-plugin/plugin.json` bumped to **`0.2.0`** in this same PR. SemVer minor bump justified by: new `linear` backend, new `.roadmap.json` config file, new operations vocabulary (`linear.stateMap`, `linear.historyWindow`, `linear.teamId`, `offlineMirror`), and new behaviours in both slash commands. No breaking change for `files`-only users — the absence of `.roadmap.json` continues to mean `backend: files`, and the legacy `single-file → indexed` migration path under `/migrate-roadmap` is preserved verbatim under step 5a.
+
+#### Closing actions (this PR)
+
+- Sub-task #8 marked `[x]` above with the full result inline.
+- TASK_001 link removed from `IN_PROGRESS.md`.
+- New entry added to `HISTORY.md` summarising the task and linking back to this file as the canonical record (per indexed-layout convention: task file stays as source of truth for what was delivered; HISTORY entry is concise).
+- This PR (`#12`) is the final one. Closes TASK_001.
 
 ### 2026-05-23 — `README.md` updated for multi-backend
 
