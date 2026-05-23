@@ -126,6 +126,17 @@ The full contract — operation signatures, error semantics, atomicity rules, id
 
 ## Status
 
+### 2026-05-23 — Spec-gap fix: orphan-`backendId` precondition check
+
+Follow-up to [PR #8](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/8). Pre-merge smoke tests of PR #8 surfaced a gap between intent and implementation in `/migrate-roadmap`:
+
+- Step 5b.5 declared _"refuse to retry the migration with `.roadmap.json` absent and some `backendId`s already written; tell the user to reconcile manually and re-run a clean migration."_
+- But step 1 (preconditions) did **not** scan for that state. So a partial-failure → re-run on the orphan repo state would skip the refusal and re-push every task, **creating duplicate Linear issues** for the ones already pushed before the failure.
+
+This PR closes the gap by adding an explicit orphan-state detection bullet to step 1: when `.roadmap.json` is absent AND `roadmap/` exists, the command scans `roadmap/TASK_NNN_*.md` files for `backendId` in YAML frontmatter. If any are found, refuse to proceed and instruct the user to clean up (delete the orphan task files + optionally the matching Linear issues, or strip the `backendId` frontmatter to re-include those tasks in a fresh migration).
+
+Sub-task #5 retains its `[x]` — the gap was found via testing PR #8 itself, not a regression introduced afterwards. The next sub-task (#6 — skill reads `.roadmap.json` + routing layer) is unchanged.
+
 ### 2026-05-22 — `/migrate-roadmap` extended for cross-backend migrations
 
 Sub-task #5 (`/migrate-roadmap` extensions) delivered. Rewrote [`commands/migrate-roadmap.md`](../commands/migrate-roadmap.md) to support two migration directions in v1:
