@@ -256,9 +256,11 @@ Activation prerequisites (assumed by every operation below):
 
 Tool naming convention: the operations below refer to Linear MCP tools by their **role** (issue-list, issue-fetch, issue-create, issue-update, comment-create) rather than by exact tool names, which depend on the Linear MCP version. The skill resolves the right tool at call time by inspecting the MCP's tool list.
 
+> **⚠ Naming convention for `stateMap` lookups.** Bucket arguments in operations use snake_case (`roadmap`, `in_progress`, `history`). The matching JSON keys in `linear.stateMap` use camelCase (`roadmap`, `inProgress`, `history`). Every `linear.stateMap[bucket]` lookup in the operations below is **implicitly translated**: bucket `in_progress` → key `inProgress`, others unchanged. When writing `.roadmap.json` (via `/create-roadmap` or `/migrate-roadmap`), use the camelCase keys. See [`docs/RoadmapBackend.md` — Buckets](../../docs/RoadmapBackend.md) for the full convention.
+
 ### `listTasks(bucket)` — propose / inspect the buckets
 
-Resolve the Linear workflow states for the requested bucket via `linear.stateMap[bucket]` in `.roadmap.json` (e.g. `["Backlog", "Todo"]` for `"roadmap"` under the defaults).
+Resolve the Linear workflow states for the requested bucket via `linear.stateMap[bucket]` in `.roadmap.json` (e.g. `["Backlog", "Todo"]` for `"roadmap"` under the defaults; for `in_progress`, look up `linear.stateMap.inProgress` per the naming convention above).
 
 Call the Linear MCP issue-list tool with:
 

@@ -62,7 +62,8 @@ Run this only at the **root of the target repository**.
 ### 5b. `files (any layout) → linear` _(new in v1)_
 
 1. **Run the Linear setup procedure** — identical to steps 5b.1–5b.4 of [`/create-roadmap`](create-roadmap.md):
-   - Detect / install the Linear MCP via the canonical `claude mcp add --transport http linear-server https://mcp.linear.app/mcp` (with OAuth heads-up).
+   - **Detect existing MCP first (idempotency)**. Inspect the MCP server list (`claude mcp list` or equivalent). Look for a server whose host matches `mcp.linear.app` **or** whose name matches `linear-server`. **If found, skip the install entirely** — do not re-run `claude mcp add`, even though it would be technically idempotent. The CLI may print "already registered" but the user sees noise; worse, some Claude Code versions surface a "tools not visible yet; please restart" instruction even when the MCP is healthy. The correct behaviour when the MCP is detected is: **do nothing here and proceed to the next bullet**.
+   - **Only if NOT detected**: install via `claude mcp add --transport http linear-server https://mcp.linear.app/mcp` and tell the user a browser window will open for OAuth on the next Linear call.
    - Call the MCP team-list tool (this is what triggers OAuth on first ever use); abort if OAuth fails or is cancelled.
    - Interactive team picker, or validate the `--team <key-or-uuid>` flag against the MCP team list.
    - Ask whether to enable the offline mirror, or honor `--mirror` / `--no-mirror`.
@@ -86,7 +87,25 @@ Run this only at the **root of the target repository**.
 
 5. **On partial failure** (an individual push fails partway through the list): **stop immediately**. Surface the error with two lists: (a) Linear ids already created (so the user can clean them up via Linear's UI if they want to retry from scratch); (b) tasks not yet pushed. **Do not write `.roadmap.json`. Do not delete any local files.** Refuse to retry the migration with `.roadmap.json` absent and some `backendId`s already written; tell the user to reconcile manually and re-run a clean migration. Auto-resume is out of scope for v1.
 
-6. **All pushes succeeded.** Write `.roadmap.json` at the repo root using the [`.roadmap.json` template in `/create-roadmap`](create-roadmap.md), with `linear.teamId` from step 5b.1, `offlineMirror` from step 5b.1, and the v1 `linear.stateMap` defaults (users edit later if their team's workflow states differ). `.roadmap.json` presence is the **atomic checkpoint** of a successful migration — its existence at this path means every task is in Linear.
+6. **All pushes succeeded.** Write `.roadmap.json` at the repo root using the **exact** template below — same shape as `/create-roadmap`'s output, so a repo created with `/create-roadmap --backend linear` and a repo migrated with `/migrate-roadmap --to linear` end up with identical config. **Do not omit `historyWindow`**. **Do not trim the `stateMap` defaults** to only the state the user happens to be using — ship all defaults so the skill's mirror auto-refresh handles every state Linear may return in the future. **JSON field-naming convention**: bucket names in operation arguments use snake_case (`in_progress`); the JSON config field uses camelCase (`inProgress`). The mapping is fixed: bucket `in_progress` ↔ field `linear.stateMap.inProgress`. Same convention as `/create-roadmap`.
+
+   ```json
+   {
+     "backend": "linear",
+     "offlineMirror": <true|false from step 5b.1>,
+     "linear": {
+       "teamId": "<linear.teamId from step 5b.1>",
+       "historyWindow": "90d",
+       "stateMap": {
+         "roadmap": ["Backlog", "Todo"],
+         "inProgress": ["In Progress"],
+         "history": ["Done", "Cancelled"]
+       }
+     }
+   }
+   ```
+
+   `.roadmap.json` presence is the **atomic checkpoint** of a successful migration — its existence at this path means every task is in Linear.
 
 7. **Branch on `offlineMirror`.**
    - **`true`** (mirror on): keep all the local files (they are now the active mirror). The single-file → indexed flip is already done; the indexed task files are written with the `backendId` frontmatter. **If `.gitignore` exists at the repo root**, append `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/` to it (idempotent — do not duplicate entries). If `.gitignore` does not exist, do nothing — the user may be working without git.

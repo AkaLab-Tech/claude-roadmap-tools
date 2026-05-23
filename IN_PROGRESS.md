@@ -9,5 +9,3 @@ When a PR closes a task, the **same PR** must update both `IN_PROGRESS.md` (remo
 ---
 
 <!-- Indexed layout: link to roadmap/TASK_NNN_<slug>.md and write progress notes inside that file, not here. -->
-
-- [TASK_001 — Multi-backend support (Linear first)](roadmap/TASK_001_multi-backend-linear-first.md) — kickoff: contract design (`docs/RoadmapBackend.md`).
