@@ -8,6 +8,23 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-05
 
+### Skill: point at `/create-roadmap` on non-tracking repos (Test 5 follow-up) — 2026-05-23
+**PR:** [#13](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/13)
+
+Closes the last bullet in `ROADMAP.md` Low Priority — the _"Tighten `SKILL.md` activation behaviour on non-tracking repos"_ follow-up surfaced during the Test 5 smoke check of [PR #3](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/3) (and re-confirmed during TASK_001's pre-merge testing as not-blocking-but-real).
+
+Previously, when predicate 3 of the activation rules fired alone (the user mentioned the flow on a repo without the three tracking files and without `.roadmap.json`), the skill was silent on what to do, and the assistant tended to substitute another markdown file in the repo (e.g. `REFACTORING_OPPORTUNITIES.md`) by extracting priorities from it as if it were the roadmap. Per the skill's own _Initialization_ section, the correct behaviour is to point the user at `/create-roadmap` and stop. This PR makes that behaviour explicit.
+
+**Delivered:**
+- New **Special case** paragraph in `skills/roadmap-tracking-flow/SKILL.md` `## When this skill applies` describing the predicate-3-fires-alone case and the correct response.
+- New bullet in `## Things this skill does NOT do` cross-referencing the rule.
+- ROADMAP.md Low Priority bullet removed (the work is now in HISTORY).
+- `plugin.json` bumped to **v0.2.1** (patch — corrected behaviour, no new features, no breaking changes).
+
+**Tests:** spec walkthrough re-verifies the Test 5 scenario from PR #3 against the new SKILL.md. Activation predicate matrix resolves the same way for predicates 1+2; only the "predicate 3 alone" path changes from _silent substitute file extraction_ to _pointer to `/create-roadmap`_.
+
+**Follow-ups:** none. With this PR, `ROADMAP.md` Low Priority contains only the 3 future-backend bullets — all other tracked items are either in HISTORY (delivered) or deliberately deferred to v2 per TASK_001 design decisions.
+
 ### TASK_001 — Multi-backend support (Linear first) — 2026-05-23
 **PR:** [#12](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/12) (closes TASK_001; full implementation across PRs [#3](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/3), [#4](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/4), [#5](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/5), [#6](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/6), [#7](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/7), [#8](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/8), [#9](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/9), [#10](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/10), [#11](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/11), and this one).
 
