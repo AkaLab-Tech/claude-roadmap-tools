@@ -30,7 +30,9 @@ Activate the rules below when **any** of:
 
 Predicate 2 covers the `backend: "linear"` + `offlineMirror: false` setup where there are no local tracking files at the repo root: the `.roadmap.json` is the only on-disk evidence of the flow. Without predicate 2, the skill would silently not activate for those repos until the user explicitly invoked the flow.
 
-Otherwise, leave it alone — do not invent these files, do not invent `.roadmap.json`, and do not suggest the flow on repos that do not use it. If the user asks to set the flow up on a repo that does not yet have it, point them at `/create-roadmap`.
+Otherwise — none of the predicates match — leave the repo alone. Do not invent these files, do not invent `.roadmap.json`, and do not suggest the flow on repos that do not use it.
+
+**Special case — predicate 3 fires without predicates 1 or 2.** The user mentioned the flow ("what's the next task of the roadmap?", "move this to HISTORY", etc.) but the repo has neither the three tracking files nor a `.roadmap.json` at its root. The skill is being consulted, but the repo is not set up. The correct response is to state this clearly and point the user at `/create-roadmap` to initialize it. **Do not** silently substitute another markdown file in the repo (e.g. `REFACTORING_OPPORTUNITIES.md`, `NOTES.md`, `TODO.md`, project-specific planning docs) by extracting priorities from it as if it were the roadmap — the user asked about *this* tracking flow, and if it is not set up the answer is to set it up, not to invent one from adjacent files. Only deviate from this if the user explicitly insists on reading a substitute file as a one-off ("look at NOTES.md as if it were the roadmap"); in that case make clear it is the user's choice to bypass the convention, not the skill's prescription.
 
 ## Layouts: single-file vs indexed
 
@@ -469,3 +471,4 @@ If the user asks to set up tracking on a repo that does not have these files yet
 - Does not push tracking commits to a protected branch directly. Tracking updates ride on the same PR branch as the work they describe.
 - Does not assume one layout — always detects first.
 - Does not invent PR numbers. If the PR is not yet open, log the entry with a placeholder and ask the user to confirm the number once it exists, **before** the PR is merged.
+- Does not invent the tracking flow on repos that do not use it. When predicate 3 fires alone (the user mentions the flow on a repo without the three tracking files and without `.roadmap.json`), the answer is to point at `/create-roadmap` and stop — **not** to extract priorities from a substitute markdown file in the repo. See [When this skill applies](#when-this-skill-applies) above for the full rule.
