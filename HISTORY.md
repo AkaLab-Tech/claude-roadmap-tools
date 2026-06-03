@@ -6,6 +6,24 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ---
 
+## 2026-06
+
+### TASK_002 — `/adopt-roadmap` command — 2026-06-03
+**PR:** [#NN](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/NN) <!-- TODO: replace NN with the real PR number before merge -->
+
+Adds the third initialization command, filling the gap between `/create-roadmap` (no tracking yet) and `/migrate-roadmap` (canonical tracking → other backend/layout). `/adopt-roadmap` normalizes a repo whose tracking files **exist but are not canonical** — most commonly an `IN_PROGRESS.md` used as a multi-phase tracker (`RLS`, `ADMIN`, `WEB`, `i18n` with `[x]`/`[ ]`) — into `ROADMAP → IN_PROGRESS → HISTORY` without losing content. This unblocks single-active-task tooling (e.g. atelier's `/next-task`) that treats any non-placeholder `IN_PROGRESS.md` as permanently occupied. See [`roadmap/TASK_002_adopt-roadmap-command.md`](roadmap/TASK_002_adopt-roadmap-command.md).
+
+**Delivered:**
+- New `commands/adopt-roadmap.md` — files-backend-only normalization: preconditions (refuse `linear`; nothing-to-adopt → `/create-roadmap`; already-canonical → stop), classification (`[x]`/done → `history`, `[ ]`/open → `roadmap`, explicit-active → `in_progress`, ambiguous → ask, **never drop**), editable adoption plan, single-diff apply, abort-leaves-no-partial-state.
+- Reuses `/create-roadmap` templates verbatim; adds only a relaxed "adopted history entry (no PR / no date)" shape so legacy done-items are recorded without fabricating PRs or dates.
+- `README.md` updated to list the third command.
+- `.claude-plugin/plugin.json` bumped to **`0.3.0`** (additive — new command, no breaking changes).
+
+**Tests:** spec walkthrough against a phase-tracker `IN_PROGRESS.md` — open items route to `roadmap`, done items to `history`, the slot resets to the empty placeholder; never-drop and never-fabricate rules verified by inspection. `claude plugin validate` exit 0.
+
+**Follow-ups:**
+- atelier integration: `/setup-project` gains detection of a phase-tracker `IN_PROGRESS.md` and offers to delegate to `/adopt-roadmap`. Tracked in [atelier](https://github.com/AkaLab-Tech/atelier).
+
 ## 2026-05
 
 ### Skill: point at `/create-roadmap` on non-tracking repos (Test 5 follow-up) — 2026-05-23
