@@ -5,6 +5,7 @@ Standalone [Claude Code](https://docs.anthropic.com/claude/docs/claude-code) plu
 It packages:
 
 - **`/create-roadmap`** — initialize task tracking in the current repo. Picks a backend (`files` or `linear`), creates the matching artefacts (markdown tracking files for `files`; `.roadmap.json` + Linear MCP registration + optional mirror files for `linear`), and wires `.gitignore` when appropriate.
+- **`/adopt-roadmap`** — normalize a repo whose tracking files **exist but are not canonical** (e.g. an `IN_PROGRESS.md` used as a multi-phase tracker instead of a single active-task slot) into the `files` backend layout, without losing content. The middle state between `/create-roadmap` (nothing exists yet) and `/migrate-roadmap` (canonical tracking → other backend/layout).
 - **`/migrate-roadmap`** — migrate between layouts or backends. Supports `files (single-file) → files (indexed)` (the legacy direction) and `files (any layout) → linear` (with `backendId` write-back into each task file's frontmatter, plus optional auto-delete of local files when the mirror is off).
 - **`roadmap-tracking-flow` skill** — auto-activates on any repository where the tracking flow is in place. Enforces the flow `ROADMAP → IN_PROGRESS → HISTORY` and the pre-merge tracking rule (both the removal from `IN_PROGRESS.md` and the new `HISTORY.md` entry ride on the same PR as the work itself).
 
@@ -35,6 +36,8 @@ The marketplace is named `akalab-tech`, so any other AkaLab-Tech plugin can be i
 3. From that point on, the `roadmap-tracking-flow` skill activates automatically on this repo, proposes next tasks from `ROADMAP.md`, and reminds you of the pre-merge tracking rule before opening PRs.
 
 If a repo already uses the single-file layout and you want to upgrade it, run `/migrate-roadmap` instead — it converts the existing tracking files in place without losing content.
+
+If a repo already has `ROADMAP.md` / `IN_PROGRESS.md` from before this flow — for example an `IN_PROGRESS.md` used as a multi-phase tracker (`RLS`, `ADMIN`, `WEB`, … with `[x]`/`[ ]`) rather than a single active-task slot — run `/adopt-roadmap` to normalize it in place: done items go to `HISTORY.md`, open items to `ROADMAP.md`, and `IN_PROGRESS.md` is reset to an empty slot. Nothing is dropped.
 
 ### `linear` backend
 
