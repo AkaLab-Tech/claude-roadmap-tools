@@ -9,7 +9,7 @@ Newest first. Each entry references the PR(s) that delivered the work.
 ## 2026-06
 
 ### TASK_002 — `/adopt-roadmap` command — 2026-06-03
-**PR:** [#NN](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/NN) <!-- TODO: replace NN with the real PR number before merge -->
+**PR:** [#14](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/14)
 
 Adds the third initialization command, filling the gap between `/create-roadmap` (no tracking yet) and `/migrate-roadmap` (canonical tracking → other backend/layout). `/adopt-roadmap` normalizes a repo whose tracking files **exist but are not canonical** — most commonly an `IN_PROGRESS.md` used as a multi-phase tracker (`RLS`, `ADMIN`, `WEB`, `i18n` with `[x]`/`[ ]`) — into `ROADMAP → IN_PROGRESS → HISTORY` without losing content. This unblocks single-active-task tooling (e.g. atelier's `/next-task`) that treats any non-placeholder `IN_PROGRESS.md` as permanently occupied. See [`roadmap/TASK_002_adopt-roadmap-command.md`](roadmap/TASK_002_adopt-roadmap-command.md).
 
