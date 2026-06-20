@@ -1,6 +1,6 @@
 ---
 name: roadmap-tracking-flow
-description: Consult this skill whenever the current repository's root contains all three of `ROADMAP.md`, `IN_PROGRESS.md` and `HISTORY.md`, OR a `.roadmap.json` config file (any backend), OR the user explicitly mentions task tracking, the roadmap, what is in progress, history of completed work, or moving a task between those files. The skill defines the flow `ROADMAP → IN_PROGRESS → HISTORY`, the pre-merge tracking rule, how to propose the next task, and the entry format for each file. It supports two backends — `files` (markdown at the repo root, single-file or indexed layout) and `linear` (Linear issues via the Linear MCP, optional offline mirror with auto-refresh on activation). Skip for read-only chats that do not touch tracking, for trivial edits, and once the user has declined applying it earlier in the session.
+description: Consult this skill whenever the current repository's root contains all three of `ROADMAP.md`, `IN_PROGRESS.md` and `HISTORY.md`, OR a `.roadmap.json` config file (any backend), OR the user explicitly mentions task tracking, the roadmap, what is in progress, history of completed work, or moving a task between those files. The skill defines the flow `ROADMAP → IN_PROGRESS → HISTORY`, the pre-merge tracking rule, how to propose the next task, and the entry format for each file. It supports three backends — `files` (markdown at the repo root, single-file or indexed layout), `linear` (Linear issues via the Linear MCP, optional offline mirror with auto-refresh on activation), and `github-project` (GitHub Projects v2 via the hosted GitHub MCP, optional offline mirror). Skip for read-only chats that do not touch tracking, for trivial edits, and once the user has declined applying it earlier in the session.
 ---
 
 # roadmap-tracking-flow skill
@@ -11,12 +11,13 @@ Keep the user's task tracking consistent across the three top-level files (`ROAD
 
 The skill's operations follow the abstract `RoadmapBackend` contract documented in [`docs/RoadmapBackend.md`](../../docs/RoadmapBackend.md). That document is the canonical spec — operation signatures, error names, atomicity rules, and per-backend notes — and is shared with every other piece of the plugin (the slash commands and any future backend).
 
-This `SKILL.md` expresses both backends shipped with the plugin:
+This `SKILL.md` expresses three backends shipped with the plugin:
 
 - **`FilesBackend`** — applied when `.roadmap.json` is absent or declares `backend: "files"` (the default). Markdown files at the repo root, single-file or indexed layout. See [Operations (`FilesBackend`)](#operations-filesbackend) below.
 - **`LinearBackend`** — applied when `.roadmap.json` declares `backend: "linear"`. Linear issues backed by the Linear MCP server. See [Operations (`LinearBackend`)](#operations-linearbackend) below.
+- **`GitHubProjectBackend`** — applied when `.roadmap.json` declares `backend: "github-project"`. GitHub Projects v2 items backed by the hosted GitHub MCP. See [Operations (`GitHubProjectBackend`)](#operations-githubprojectbackend) below.
 
-Future backends (`GitHubIssuesBackend`, `JiraBackend`, `TrelloBackend`) extend this file in the same pattern, each adding its own `## Operations (<BackendName>)` sibling section with per-operation notes.
+Future backends (`JiraBackend`, `TrelloBackend`) extend this file in the same pattern, each adding its own `## Operations (<BackendName>)` sibling section with per-operation notes.
 
 The plugin is 100% markdown — the contract is a specification the skill follows, not a runtime API. The function-style signatures in the Operations sections below describe inputs, outputs, and behaviour, not callable code.
 
@@ -25,10 +26,10 @@ The plugin is 100% markdown — the contract is a specification the skill follow
 Activate the rules below when **any** of:
 
 1. The current repository's root contains **all three** of `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, **or**
-2. The current repository's root contains a `.roadmap.json` config file (any backend — `files` or `linear`), **or**
+2. The current repository's root contains a `.roadmap.json` config file (any backend — `files`, `linear`, or `github-project`), **or**
 3. The user explicitly references the flow ("move this to HISTORY", "what is in progress?", "next task from the roadmap", "log this PR").
 
-Predicate 2 covers the `backend: "linear"` + `offlineMirror: false` setup where there are no local tracking files at the repo root: the `.roadmap.json` is the only on-disk evidence of the flow. Without predicate 2, the skill would silently not activate for those repos until the user explicitly invoked the flow.
+Predicate 2 covers the `backend: "linear"` or `backend: "github-project"` + `offlineMirror: false` setup where there are no local tracking files at the repo root: the `.roadmap.json` is the only on-disk evidence of the flow. Without predicate 2, the skill would silently not activate for those repos until the user explicitly invoked the flow.
 
 Otherwise — none of the predicates match — leave the repo alone. Do not invent these files, do not invent `.roadmap.json`, and do not suggest the flow on repos that do not use it.
 
@@ -51,14 +52,15 @@ On every skill activation, run the detection in this order **before** answering 
    - **Present**: read it. The `backend` field decides which Operations section to follow:
      - `backend: "files"` → use [Operations (`FilesBackend`)](#operations-filesbackend).
      - `backend: "linear"` → use [Operations (`LinearBackend`)](#operations-linearbackend).
-     The `offlineMirror` field decides whether the [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) applies — only meaningful for `linear` (and any future remote backend), ignored for `files`.
+     - `backend: "github-project"` → use [Operations (`GitHubProjectBackend`)](#operations-githubprojectbackend).
+     The `offlineMirror` field decides whether the [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) applies — meaningful for any remote backend (`linear`, `github-project`), ignored for `files`.
    - **Absent**: source backend is implicitly `files` (the default). Use [Operations (`FilesBackend`)](#operations-filesbackend).
 
 2. **For `files` backend**, detect the layout (single-file vs indexed) as documented in [Layouts: single-file vs indexed](#layouts-single-file-vs-indexed) above. The chosen layout governs how each operation reads and writes files.
 
-3. **For `linear` backend with `offlineMirror: true`**, run the mirror auto-refresh (see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below) **before** answering the user's prompt. The refresh is part of activation, not a separate step the user invokes.
+3. **For any remote backend (`linear` or `github-project`) with `offlineMirror: true`**, run the mirror auto-refresh (see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below) **before** answering the user's prompt. The refresh is part of activation, not a separate step the user invokes.
 
-4. **For `linear` backend with `offlineMirror: false`**, no local files exist (the repo is Linear-only). All operations route through `LinearBackend` and execute against Linear in real-time. No refresh step is needed because there is no mirror to refresh.
+4. **For any remote backend (`linear` or `github-project`) with `offlineMirror: false`**, no local files exist (the repo is remote-only). All operations route through the appropriate backend and execute against the remote in real-time. No refresh step is needed because there is no mirror to refresh.
 
 Once the backend (and, for files, the layout) is decided, the rest of this skill — [the flow](#the-flow), [the pre-merge tracking rule](#pre-merge-tracking-rule-load-bearing), the chosen Operations section, and the format conventions — applies as documented. The detection above is the routing layer; everything else is the per-backend implementation.
 
@@ -498,7 +500,7 @@ When `isAvailable()` returns `false`, the skill surfaces this to the user. Opera
 Applies when **all** of:
 
 - `.roadmap.json` exists at the repo root.
-- It declares `backend: "linear"` (or, in the future, any other remote backend).
+- It declares a remote backend (`backend: "linear"` or `backend: "github-project"`).
 - It declares `offlineMirror: true`.
 
 On every skill activation in such a repo, the skill performs a mirror refresh **before** answering the user's prompt. This implements decision 8 in [TASK_001](../../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions): "automatic on skill activation; no background polling, no explicit `/refresh-roadmap` command in v1."
