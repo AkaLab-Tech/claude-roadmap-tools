@@ -38,7 +38,16 @@ backendId: ENG-123
 
 The local `TASK_NNN` stays the **human handle** (for filenames and the index in `ROADMAP.md`); `backendId` is the **canonical identity for sync** operations against Linear. See decision 9 in [TASK_001](../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions).
 
-For `GitHubProjectBackend` with an offline mirror, the same frontmatter pattern applies — `backend: github-project` and `backendId: PVTI_...` — so the `PVTI_...` node id is the canonical identity for sync against the Project.
+For `GitHubProjectBackend` with an offline mirror, the same frontmatter pattern applies:
+
+```yaml
+---
+backend: github-project
+backendId: PVTI_xxx
+---
+```
+
+The local `TASK_NNN` stays the **human handle** (for filenames and the index in `ROADMAP.md`); `backendId` (the Projects v2 item node id) is the **canonical identity for sync** operations against the Project.
 
 ### Buckets
 
@@ -190,6 +199,8 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **`blocked_by`** — stored as a plain text field on the Project item. Projects v2 has **no** native dependency or relations field; this is a known limitation. The text field holds a comma-separated list of blocking task ids (e.g. `TASK_003, TASK_005`) as a convention.
 - **`isAvailable()`** — inspects the registered MCP server list in Claude Code for a host/name match against `api.githubcopilot.com/mcp`. Returns a boolean. Issues no API call, avoiding OAuth on first use — exactly mirroring the `LinearBackend` pattern.
 - **Project and owner selection**: `githubProject.owner` (GitHub org or user login) plus either `githubProject.projectNumber` (the integer shown in the Project URL) or the Project node id, recorded in `.roadmap.json`. Mirrors `LinearBackend`'s `linear.teamId` selection pattern. `/create-roadmap` writes these during setup.
+- **Offline mirror**: when `offlineMirror: true`, the skill maintains the four local paths (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`) as a one-way read-only mirror of the Project's state. The mirror refreshes automatically every time the skill activates. Each local task file carries `backend: github-project` + `backendId: PVTI_...` frontmatter; coherence between local files and remote items is by `backendId`, not by title or slug. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation).
+- **History window for refresh**: `githubProject.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Bounds the cost of `listTasks("history")` on every skill activation. Supported values: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"` (last N entries), or `"all"` (no limit). Items outside the window remain accessible via `getTask(id)` on-demand. Same grammar as `linear.historyWindow`. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation) for the full semantics.
 
 ### Future backends
 

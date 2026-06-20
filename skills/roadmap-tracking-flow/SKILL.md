@@ -402,7 +402,7 @@ Call the project-item-list role to fetch project items, then filter to those who
 - `title`: from the item.
 - `current_bucket`: derived by reverse-mapping the item's Status through `githubProject.stateMap`.
 
-When `offlineMirror: true`, this operation also refreshes the local mirror (semantics deferred to task #19d).
+When `offlineMirror: true`, this operation also refreshes the corresponding section of the local mirror as part of the [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) procedure.
 
 **Errors** — empty bucket returns an empty list (not an error). MCP unavailable → throw `backend-unavailable`.
 
@@ -429,7 +429,7 @@ Return:
 3. **Set custom fields**: `type` and `estimate` if provided; `Ready` unset (not ready by default); `blocked_by` as a plain text value if provided.
 4. **Capture the assigned item node id** (`PVTI_...`) returned by GitHub and return it.
 
-When `offlineMirror: true`, this operation also writes a new local task file (semantics deferred to task #19d).
+When `offlineMirror: true`, the same operation **also** writes a new local `roadmap/TASK_NNN_<slug>.md` with YAML frontmatter `backend: github-project` + `backendId: <PVTI_...>` (the item node id returned by GitHub), plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the GitHub item id. Bundle the local file write with the item-create calls as one logical transaction.
 
 **Side effects** — task exists in the Project in `githubProject.stateMap.roadmap[0]` (typically `Backlog`).
 
@@ -443,7 +443,7 @@ When `offlineMirror: true`, this operation also writes a new local task file (se
 2. **Resolve target Status.** Use the **first** element of `githubProject.stateMap[toBucket]`; resolve its option id from the project's field metadata.
 3. **Update the item's Status field** via item-field-update. A single Status field-update mutation is atomic — that satisfies the contract's atomicity requirement.
 
-When `offlineMirror: true`, this operation also rewrites the corresponding local link entries (semantics deferred to task #19d).
+When `offlineMirror: true`, the same operation **also** rewrites the corresponding link entries in the local `ROADMAP.md` ↔ `IN_PROGRESS.md` (mirroring the `FilesBackend` behaviour). The local `roadmap/TASK_NNN_*.md` is **not** moved or renamed (indexed-layout rule). Both the local file edits and the GitHub Status-field update must succeed together — if the GitHub call fails, no local files are touched.
 
 **Errors** — `task-not-in-from-bucket`, `move-into-history-forbidden` (when `toBucket == "history"`), `backend-unavailable`.
 
@@ -477,7 +477,7 @@ The **load-bearing atomic operation** that enforces the [pre-merge tracking rule
 
 This caveat is documented in [`docs/RoadmapBackend.md` — Atomicity and rollback](../../docs/RoadmapBackend.md).
 
-When `offlineMirror: true`, this operation also removes the local `IN_PROGRESS.md` link entry and appends to local `HISTORY.md` (semantics deferred to task #19d).
+When `offlineMirror: true`, the same operation **also** removes the `IN_PROGRESS.md` link entry and appends the standard `HISTORY.md` entry (entry shape identical to `FilesBackend.appendHistoryEntry` — `### <Title> — YYYY-MM-DD` / `**PR:** [#N](url)` / `**Delivered:** …` / `**Tests:** …` / `**Follow-ups:** …`), bundled with the GitHub item-field-update + comment/note-create calls as one logical transaction.
 
 **Errors** — `task-not-in-progress`, missing required `prMetadata` fields, `backend-unavailable`.
 
@@ -507,24 +507,25 @@ On every skill activation in such a repo, the skill performs a mirror refresh **
 
 ### Refresh procedure
 
-1. **Pre-check the backend's availability**: call `LinearBackend.isAvailable()` (see [`isAvailable()` under Operations (LinearBackend)](#isavailable--connectivity-check)).
+1. **Pre-check the backend's availability**: resolve the active backend from `.roadmap.json` and call that backend's `isAvailable()` — `LinearBackend.isAvailable()` or `GitHubProjectBackend.isAvailable()` (see [`isAvailable()` under Operations (LinearBackend)](#isavailable--connectivity-check-1) and [`isAvailable()` under Operations (GitHubProjectBackend)](#isavailable--connectivity-check-2)).
 
-2. **If `isAvailable()` returns `false`** (Linear MCP not registered or not reachable):
+2. **If `isAvailable()` returns `false`** (the active backend's MCP is not registered or not reachable):
    - **Do not** attempt the refresh.
    - **Fall back to the existing local snapshot**: the user can still read `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, and every `roadmap/TASK_NNN_*.md` as they were at the last successful refresh.
-   - **Surface a clear warning** at the start of the answer, naming the snapshot age and the install / reconnection command. Example:
-     > _Linear MCP unreachable; showing the mirror snapshot from 2026-05-22 14:31. To restore: re-run `claude mcp add --transport http linear-server https://mcp.linear.app/mcp` (or check your network). Read-only operations work against the snapshot; write operations (`addTask`, `moveTask`, `appendHistoryEntry`) will throw `backend-unavailable` until the MCP is restored._
+   - **Surface a clear warning** at the start of the answer, naming the snapshot age and the reconnection hint. Examples:
+     - _Linear backend_: _Linear MCP unreachable; showing the mirror snapshot from 2026-05-22 14:31. To restore: re-run `claude mcp add --transport http linear-server https://mcp.linear.app/mcp` (or check your network). Read-only operations work against the snapshot; write operations (`addTask`, `moveTask`, `appendHistoryEntry`) will throw `backend-unavailable` until the MCP is restored._
+     - _GitHub Project backend_: _GitHub MCP unreachable; showing the mirror snapshot from 2026-05-22 14:31. To restore: re-register / reconnect the hosted GitHub MCP (endpoint `https://api.githubcopilot.com/mcp/`) and ensure the `project` OAuth scope is granted. Read-only operations work against the snapshot; write operations (`addTask`, `moveTask`, `appendHistoryEntry`) will throw `backend-unavailable` until the MCP is restored._
    - Activation continues — the skill is still useful for reading the snapshot.
 
-3. **If `isAvailable()` returns `true`**, perform the refresh in this order:
-   1. Call `listTasks("roadmap")` against `LinearBackend`. Regenerate the index lines in `ROADMAP.md`, plus any new `roadmap/TASK_NNN_*.md` files for issues that do not yet have a local file.
+3. **If `isAvailable()` returns `true`**, perform the refresh in this order against the active backend (`LinearBackend` or `GitHubProjectBackend`):
+   1. Call `listTasks("roadmap")`. Regenerate the index lines in `ROADMAP.md`, plus any new `roadmap/TASK_NNN_*.md` files for remote items that do not yet have a local file.
    2. Call `listTasks("in_progress")`. Regenerate the link lines in `IN_PROGRESS.md`.
    3. Call `listTasks("history")` **scoped by the history window** (see below). Regenerate the matching `HISTORY.md` entries.
 
 4. **Coherence rules** (per decision 3 in [TASK_001](../../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions)):
-   - Match local task files to remote issues by `backendId` in YAML frontmatter, **not** by title or slug.
-   - New remote issues that have no matching local file get new `roadmap/TASK_NNN_*.md` files with the next sequential `TASK_NNN` (per the [Numbering convention](../../commands/create-roadmap.md) — never reuse numbers).
-   - Local task files whose `backendId` no longer exists remotely are **flagged in the warning** at the start of the answer (`TASK_042 — backendId ENG-123 no longer exists in Linear; left in place for review`) but **not auto-deleted**. The user decides whether to remove them.
+   - Match local task files to remote items by `backendId` in YAML frontmatter, **not** by title or slug.
+   - New remote items that have no matching local file get new `roadmap/TASK_NNN_*.md` files with the next sequential `TASK_NNN` (per the [Numbering convention](../../commands/create-roadmap.md) — never reuse numbers).
+   - Local task files whose `backendId` no longer exists remotely are **flagged in the warning** at the start of the answer (e.g. `TASK_042 — backendId no longer exists in the remote backend (Linear issue / GitHub Project item); left in place for review`) but **not auto-deleted**. The user decides whether to remove them.
 
 5. **Safe failure mode**:
    - If any individual `listTasks` call fails mid-refresh, **stop that bucket's refresh** and keep the previous local snapshot for that bucket intact. Do **not** half-write the bucket's files.
@@ -533,34 +534,55 @@ On every skill activation in such a repo, the skill performs a mirror refresh **
 
 ### History window
 
-The `history` bucket can grow large over a long-running Linear project. To bound the cost of refreshing it on every activation, `listTasks("history")` is **scoped by default to the last 90 days** of issues whose state is in `linear.stateMap.history`. Users override this via `linear.historyWindow` in `.roadmap.json`:
+The `history` bucket can grow large over a long-running project. To bound the cost of refreshing it on every activation, `listTasks("history")` is **scoped by default to the last 90 days** of items whose state is in the backend's history states. The window key is **backend-scoped**:
 
-```json
-{
-  "backend": "linear",
-  "offlineMirror": true,
-  "linear": {
-    "teamId": "<team-uuid>",
-    "historyWindow": "90d",
-    "stateMap": {
-      "roadmap": ["Backlog", "Todo"],
-      "inProgress": ["In Progress"],
-      "history": ["Done", "Cancelled"]
+- **Linear backend** — `linear.historyWindow` in `.roadmap.json`:
+
+  ```json
+  {
+    "backend": "linear",
+    "offlineMirror": true,
+    "linear": {
+      "teamId": "<team-uuid>",
+      "historyWindow": "90d",
+      "stateMap": {
+        "roadmap": ["Backlog", "Todo"],
+        "inProgress": ["In Progress"],
+        "history": ["Done", "Cancelled"]
+      }
     }
   }
-}
-```
+  ```
 
-Supported `historyWindow` values:
+- **GitHub Project backend** — `githubProject.historyWindow` in `.roadmap.json` (identical grammar):
+
+  ```json
+  {
+    "backend": "github-project",
+    "offlineMirror": true,
+    "githubProject": {
+      "owner": "<org-or-user>",
+      "projectNumber": 7,
+      "historyWindow": "90d",
+      "stateMap": {
+        "roadmap": ["Backlog", "Todo"],
+        "inProgress": ["In Progress"],
+        "history": ["Done", "Cancelled"]
+      }
+    }
+  }
+  ```
+
+Supported `historyWindow` values (same grammar for both backends):
 
 | Value | Meaning |
 | :--- | :--- |
-| `"90d"` (default if omitted) | Issues whose completion date is within the last 90 days. |
+| `"90d"` (default if omitted) | Items whose completion date is within the last 90 days. |
 | `"30d"`, `"180d"`, `"365d"`, etc. | Same shape, different window. |
 | `"50"` (any bare integer) | The last N entries by completion date, regardless of age. |
-| `"all"` | No limit; pull every history issue. Use only on small projects — refresh cost scales with project age. |
+| `"all"` | No limit; pull every history item. Use only on small projects — refresh cost scales with project age. |
 
-Issues older than the window remain accessible via `getTask(id)` on-demand — `getTask` always fetches a single issue from Linear regardless of window. The window only bounds the refresh's `listTasks("history")` call.
+Items older than the window remain accessible via `getTask(id)` on-demand — `getTask` always fetches a single item from the remote backend regardless of window. The window only bounds the refresh's `listTasks("history")` call.
 
 ### What is **not** refreshed
 
