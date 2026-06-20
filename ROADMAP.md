@@ -1,23 +1,17 @@
 # Roadmap
 
-Backlog index. Each entry links to its detailed task file in `roadmap/`.
-
-Tasks flow: `ROADMAP.md` → `IN_PROGRESS.md` → `HISTORY.md`. The detail file (`roadmap/TASK_NNN_<slug>.md`) stays put across all three states; `IN_PROGRESS.md` and `HISTORY.md` only link to it.
+Backlog index. Tasks flow: `ROADMAP.md` → `IN_PROGRESS.md` → `HISTORY.md`. Detail files in `roadmap/TASK_NNN_<slug>.md` stay put across all three states.
 
 ---
 
-## High Priority
+## 🔥 P0 — Blockers
 
-<!-- - [TASK_NNN — Example title](roadmap/TASK_NNN_example-title.md) -->
+## 🎯 P1 — Next
 
-## Medium Priority
+## 💭 P2 — Backlog
 
-<!-- - [TASK_NNN — Example title](roadmap/TASK_NNN_example-title.md) -->
+> Future backends — materialize into a task once the multi-backend foundation (TASK_001) is proven and a concrete user need is confirmed for each.
 
-## Low Priority / Ideas
-
-> Future backends, to be materialized into `TASK_NNN_<slug>.md` files once the multi-backend foundation from TASK_001 lands and a concrete user need is confirmed for each one.
-
-- **GitHub Issues backend** — map ROADMAP/IN_PROGRESS/HISTORY to repo issues + labels (`status:roadmap`, `status:in-progress`, `status:done`) or a project board column. Useful for OSS projects already centred around GitHub.
-- **Jira backend** — map to Jira issues + workflow states. Useful for enterprise teams already on Jira.
-- **Trello backend** — map to Trello board lists. Useful for lighter, non-engineering project tracking.
+- [ ] `feat` GitHub Issues backend — map ROADMAP/IN_PROGRESS/HISTORY to repo issues + labels (`status:roadmap`, `status:in-progress`, `status:done`) or a project board column `#3` `~TODO`
+- [ ] `feat` Jira backend — map ROADMAP/IN_PROGRESS/HISTORY to Jira issues + workflow states `#4` `~TODO`
+- [ ] `feat` Trello backend — map ROADMAP/IN_PROGRESS/HISTORY to Trello board lists `#5` `~TODO`
