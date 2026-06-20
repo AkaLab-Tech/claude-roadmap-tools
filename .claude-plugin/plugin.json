@@ -1,8 +1,8 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "claude-roadmap-tools",
-  "version": "0.4.0",
-  "description": "Standalone Claude Code plugin: ROADMAP / IN_PROGRESS / HISTORY tracking flow with /create-roadmap, /adopt-roadmap and /migrate-roadmap. Supports two backends — files (markdown at the repo root) and linear (via the Linear MCP) with an optional offline mirror.",
+  "version": "0.5.0",
+  "description": "Standalone Claude Code plugin: ROADMAP / IN_PROGRESS / HISTORY tracking flow with /create-roadmap, /adopt-roadmap and /migrate-roadmap. Supports three backends — files (markdown at the repo root), linear (via the Linear MCP), and github-project (GitHub Projects v2 via the GitHub MCP) — with an optional offline mirror.",
   "author": {
     "name": "AkaLab-Tech",
     "url": "https://github.com/AkaLab-Tech"
