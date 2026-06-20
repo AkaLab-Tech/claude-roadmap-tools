@@ -374,6 +374,125 @@ For `LinearBackend`, `isAvailable()` returns `true` iff a Linear MCP server is r
 
 When `isAvailable()` returns `false`, the skill surfaces this error to the user (and `/create-roadmap` re-suggests the install command). Operations that depend on the Linear MCP throw `backend-unavailable` when called against an unavailable backend. For the activation-time behaviour when `isAvailable()` returns `false`, see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below — the skill falls back gracefully to the existing local snapshot rather than refusing to activate.
 
+## Operations (`GitHubProjectBackend`)
+
+This section describes how each of the six contract operations is performed when the repo's `.roadmap.json` declares `backend: "github-project"`. The structure mirrors [Operations (`FilesBackend`)](#operations-filesbackend) and [Operations (`LinearBackend`)](#operations-linearbackend) above; only the per-operation implementation differs.
+
+Activation prerequisites (assumed by every operation below):
+
+- `.roadmap.json` exists at the repo root with `backend: "github-project"`, a project/owner selector (`githubProject.owner` plus either `githubProject.projectNumber` or the Project node id), and a `githubProject.stateMap` (defaults: `roadmap: ["Backlog", "Todo"]`, `inProgress: ["In Progress"]`, `history: ["Done", "Cancelled"]`).
+- A hosted GitHub MCP server is registered with Claude Code, reachable at `https://api.githubcopilot.com/mcp/`. The `projects` toolset is **not** enabled by default — it requires the `project` OAuth scope. An unscoped token makes the toolset appear absent; treat a missing toolset as a missing scope, not a missing server. (The exact `claude mcp add` registration command and OAuth scope wiring are finalized in task #19c — do not rely on a specific command here.)
+- The user has authorized the GitHub MCP via OAuth 2.1 + PKCE at least once in this Claude Code installation. The first-ever GitHub MCP call triggers a browser-based flow; subsequent calls reuse the cached token until it expires.
+
+Tool naming convention: the operations below refer to GitHub Projects v2 operations by their **role** — **project-item-list** (list a project's items), **item-fetch** (fetch one item by id), **item-create / draft-issue-create** (create a draft item), **item-field-update** (set or clear a field, including single-select Status), **comment/note-create** (append a note to the item's linked or draft issue) — rather than by exact MCP tool names, which depend on the MCP version and are resolved at call time by inspecting the tool list. These roles map to the confirmed Projects v2 toolset: `projects_list` / `projects_get` / `projects_write` (GA hosted endpoint `https://api.githubcopilot.com/mcp/`, OAuth 2.1 + PKCE).
+
+> **⚠ Naming convention for `stateMap` lookups.** Bucket arguments in operations use snake_case (`roadmap`, `in_progress`, `history`). The matching JSON keys in `githubProject.stateMap` use camelCase (`roadmap`, `inProgress`, `history`). Every `githubProject.stateMap[bucket]` lookup in the operations below is **implicitly translated**: bucket `in_progress` → key `inProgress`, others unchanged. When writing `.roadmap.json`, use the camelCase keys. See [`docs/RoadmapBackend.md` — Buckets](../../docs/RoadmapBackend.md) for the full convention.
+
+**Field/option-id resolution.** Setting the single-select **Status** field (or any single-select custom field) via Projects v2 requires the **field id + option id** — not the human label. Before any item-field-update that changes Status, the skill first inspects the project's field metadata via the project-item-list role to map a label like `"In Progress"` to its option id. This resolution is performed at call time.
+
+### `listTasks(bucket)` — propose / inspect the buckets
+
+Resolve the Status values for the requested bucket via `githubProject.stateMap[bucket]` in `.roadmap.json` (e.g. `["Backlog", "Todo"]` for `"roadmap"` under the defaults; for `in_progress`, look up `githubProject.stateMap.inProgress` per the naming convention above).
+
+Call the project-item-list role to fetch project items, then filter to those whose Status value is in `githubProject.stateMap[bucket]`. For each matching item, build a task element with:
+
+- `id`: the item node id (`PVTI_...`).
+- `title`: from the item.
+- `current_bucket`: derived by reverse-mapping the item's Status through `githubProject.stateMap`.
+
+When `offlineMirror: true`, this operation also refreshes the local mirror (semantics deferred to task #19d).
+
+**Errors** — empty bucket returns an empty list (not an error). MCP unavailable → throw `backend-unavailable`.
+
+### `getTask(id)` — fetch a single task's full content
+
+Call the item-fetch role with the canonical `PVTI_...` node id.
+
+Return:
+
+- `id`: the item node id.
+- `title`: from the item.
+- `body`: from the item's draft-issue or linked-issue body.
+- `current_bucket`: reverse-mapped from the item's Status through `githubProject.stateMap`.
+- Custom-field values: `type`, `estimate`, `Ready` (the dedicated Ready field on the Project), `blocked_by` (plain text field).
+
+**Where progress notes live (GitHubProjectBackend equivalent of `## Status`)**: there is no `## Status` section in a GitHub Project item; the equivalent is the **item's draft-issue or linked-issue comment thread**. Surface the most recent meaningful progress comment as the active state, the same way `FilesBackend` surfaces the latest `## Status` entry.
+
+**Errors** — throw `task-not-found` if no item with that id exists, or it belongs to a different project than the configured owner/projectNumber. MCP unavailable → throw `backend-unavailable`.
+
+### `addTask(task)` — adding a new task to the `ROADMAP`
+
+1. **Create a draft item** using the item-create / draft-issue-create role with the given title and body.
+2. **Set Status** to `githubProject.stateMap.roadmap[0]` (e.g. `Backlog` under defaults). Resolve the field id and option id from the project's field metadata via the project-item-list role before calling item-field-update.
+3. **Set custom fields**: `type` and `estimate` if provided; `Ready` unset (not ready by default); `blocked_by` as a plain text value if provided.
+4. **Capture the assigned item node id** (`PVTI_...`) returned by GitHub and return it.
+
+When `offlineMirror: true`, this operation also writes a new local task file (semantics deferred to task #19d).
+
+**Side effects** — task exists in the Project in `githubProject.stateMap.roadmap[0]` (typically `Backlog`).
+
+**Errors** — invalid input (missing title) → throw. Permission denied by GitHub → throw, surfacing the error verbatim.
+
+### `moveTask(id, fromBucket, toBucket)` — moving a task between buckets
+
+> **Moving INTO `history` is forbidden in this operation.** Use `appendHistoryEntry` instead — history transitions require PR metadata and a comment append.
+
+1. **Pre-check the source bucket.** Call the item-fetch role. Verify the item's current Status is in `githubProject.stateMap[fromBucket]`. If not, throw `task-not-in-from-bucket`.
+2. **Resolve target Status.** Use the **first** element of `githubProject.stateMap[toBucket]`; resolve its option id from the project's field metadata.
+3. **Update the item's Status field** via item-field-update. A single Status field-update mutation is atomic — that satisfies the contract's atomicity requirement.
+
+When `offlineMirror: true`, this operation also rewrites the corresponding local link entries (semantics deferred to task #19d).
+
+**Errors** — `task-not-in-from-bucket`, `move-into-history-forbidden` (when `toBucket == "history"`), `backend-unavailable`.
+
+### `appendHistoryEntry(id, prMetadata)` — logging completed work
+
+The **load-bearing atomic operation** that enforces the [pre-merge tracking rule](#pre-merge-tracking-rule-load-bearing) above. Three steps in sequence:
+
+1. **Pre-check.** Verify the item's current Status is in `githubProject.stateMap.inProgress` (using the camelCase key per the naming convention). If not, throw `task-not-in-progress`.
+2. **Update Status to history.** Call item-field-update to set the item's Status to the first element of `githubProject.stateMap.history[0]` (e.g. `Done`). Resolve the option id from field metadata first.
+3. **Append PR metadata as an item comment/note.** Call the comment/note-create role with the comment body formatted as:
+
+   ```markdown
+   ## Closed by PR [#<N>](<full GitHub URL>)
+
+   <1–2 sentence framing of why this PR existed.>
+
+   **Delivered:**
+   - <bullet>
+   - <bullet>
+
+   **Tests:** <one line on the validation done>
+
+   **Follow-ups:** (optional)
+   - <bullet>
+   ```
+
+**Atomicity caveat** — the Status change is atomic per mutation, but comment/note-create is a separate call. If the Status change succeeds but the comment append fails:
+
+- **Do not** revert the Status change — the task is genuinely done; reverting would be misleading.
+- **Retry** the comment append once. If it still fails, surface a clear warning to the user with the exact comment text so they can post it manually, and continue.
+
+This caveat is documented in [`docs/RoadmapBackend.md` — Atomicity and rollback](../../docs/RoadmapBackend.md).
+
+When `offlineMirror: true`, this operation also removes the local `IN_PROGRESS.md` link entry and appends to local `HISTORY.md` (semantics deferred to task #19d).
+
+**Errors** — `task-not-in-progress`, missing required `prMetadata` fields, `backend-unavailable`.
+
+### `isAvailable()` — connectivity check
+
+For `GitHubProjectBackend`, `isAvailable()` returns `true` iff a GitHub MCP server is registered in Claude Code. The check is:
+
+1. Inspect the MCP server list (equivalent to what `claude mcp list` would show).
+2. Look for an MCP whose host matches `api.githubcopilot.com/mcp` (or whose registered name matches a known GitHub MCP registration name).
+3. Return `true` if found; `false` otherwise.
+
+**Must not** issue any GitHub API call — doing so would trigger the OAuth browser flow on first-ever invocation, violating the contract's "no side effects" rule for `isAvailable`. Exactly mirrors the `LinearBackend` pattern.
+
+Cross-reference [`docs/RoadmapBackend.md` — `GitHubProjectBackend`](../../docs/RoadmapBackend.md) for the full `isAvailable` contract notes.
+
+When `isAvailable()` returns `false`, the skill surfaces this to the user. Operations that depend on the GitHub MCP throw `backend-unavailable` when called against an unavailable backend. For the activation-time behaviour when `isAvailable()` returns `false`, see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below — the skill falls back gracefully to the existing local snapshot rather than refusing to activate.
+
 ## Mirror auto-refresh on activation
 
 Applies when **all** of:
