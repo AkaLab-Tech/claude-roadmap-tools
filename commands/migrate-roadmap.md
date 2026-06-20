@@ -1,13 +1,14 @@
 ---
-description: Migrate task tracking between backends or layouts. v1 supports `files (single-file) → files (indexed)` and `files (any layout) → linear` (Linear via MCP, with optional offline mirror). Other directions error out as "not yet implemented".
+description: Migrate task tracking between backends or layouts. v1 supports `files (single-file) → files (indexed)`, `files (any layout) → linear` (Linear via MCP), and `files (any layout) → github-project` (GitHub Projects v2 via the GitHub MCP), each with an optional offline mirror. Other directions error out as "not yet implemented".
 ---
 
 # /migrate-roadmap
 
-Migrate this repo's task tracking from one backend (or layout) to another. v1 supports two directions:
+Migrate this repo's task tracking from one backend (or layout) to another. v1 supports three directions:
 
 1. **`files (single-file) → files (indexed)`** — convert a single-file layout to indexed (titles in `ROADMAP.md`, one `roadmap/TASK_NNN_<slug>.md` per task).
 2. **`files (any layout) → linear`** — push every existing task to Linear via the Linear MCP, write `backend: linear` + `backendId: <linear-id>` into each local task file's frontmatter, persist `.roadmap.json`, and either keep the local files as an offline mirror or delete them.
+3. **`files (any layout) → github-project`** — push every existing task to a GitHub Project (Projects v2) via the hosted GitHub MCP, write `backend: github-project` + `backendId: <item-id>` into each local task file's frontmatter, persist `.roadmap.json`, and either keep the local files as an offline mirror or delete them.
 
 Other directions error out with `not yet implemented` — see the [Direction matrix](#direction-matrix).
 
@@ -21,19 +22,21 @@ Run this only at the **root of the target repository**.
    - `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md` must all exist at the repo root. If any is missing, tell the user to run `/create-roadmap` first and stop.
    - **Determine the source backend** by reading `.roadmap.json` if present:
      - File present + `backend: "linear"` → source backend is `linear`. This command refuses to migrate **away from `linear`** in v1 (see [Direction matrix](#direction-matrix)). Stop with a clear message.
+     - File present + `backend: "github-project"` → source backend is `github-project`. This command refuses to migrate **away from `github-project`** in v1 (see [Direction matrix](#direction-matrix)). Stop with a clear message.
      - File present + `backend: "files"` (explicit) → source backend is `files`.
      - File absent → source backend is `files` (implicit default).
    - **Determine the source layout** (only meaningful for `files` source): if a `roadmap/` directory exists at the root, source layout is `indexed`; otherwise `single-file`.
-   - **Detect orphan partial-migration state.** When `.roadmap.json` is **absent** AND `roadmap/` exists, scan every `roadmap/TASK_NNN_*.md` for a `backendId` field in YAML frontmatter. If any file has `backendId` set, this is an orphan state left over from a previously-failed `files → linear` migration (see step 5b.5). **Refuse to proceed.** Surface the list of orphan task files with their `backendId`s and tell the user to reconcile manually before re-running: either delete the orphan task files (and, optionally, the matching Linear issues via Linear's UI to avoid duplicates), or strip the `backendId` frontmatter to re-include those tasks in a fresh migration. This precondition guards against creating duplicate Linear issues on retry.
+   - **Detect orphan partial-migration state.** When `.roadmap.json` is **absent** AND `roadmap/` exists, scan every `roadmap/TASK_NNN_*.md` for a `backendId` field in YAML frontmatter. If any file has `backendId` set, this is an orphan state left over from a previously-failed `files → linear` or `files → github-project` migration (see steps 5b.5 and 5c.5). **Refuse to proceed.** Surface the list of orphan task files with their `backendId`s and tell the user to reconcile manually before re-running: either delete the orphan task files (and, optionally, the matching issues/items in the target backend to avoid duplicates), or strip the `backendId` frontmatter to re-include those tasks in a fresh migration. This precondition guards against creating duplicate items on retry.
    - If the working tree has uncommitted changes to any tracking file or to `.roadmap.json`, ask the user whether to proceed. A clean working tree makes the migration diff easier to review.
 
-2. **Resolve target backend (and layout).** Either from `$ARGUMENTS` (`--to <files|linear>`) or via interactive prompt. For `--to files`, the target layout is `indexed` (single-file → single-file is a no-op; indexed → indexed is a no-op).
+2. **Resolve target backend (and layout).** Either from `$ARGUMENTS` (`--to <files|linear|github-project>`) or via interactive prompt. For `--to files`, the target layout is `indexed` (single-file → single-file is a no-op; indexed → indexed is a no-op).
 
 3. **Validate direction.** Look up [Direction matrix](#direction-matrix). If the resolved direction is not supported in v1, error out with a clear message naming source and target.
 
 4. **Branch by direction.**
    - **`files (single-file) → files (indexed)`** → step 5a.
    - **`files (any layout) → linear`** → step 5b.
+   - **`files (any layout) → github-project`** → step 5c.
 
 ### 5a. `files (single-file) → files (indexed)` _(current behavior preserved)_
 
@@ -113,6 +116,33 @@ Run this only at the **root of the target repository**.
 
 8. Continue to step 6 (report).
 
+### 5c. `files (any layout) → github-project` _(new in v1)_
+
+1. **Run the GitHub MCP setup procedure** — identical to steps 5c.1–5c.4 of [`/create-roadmap`](create-roadmap.md) (MCP detect-first, install only if absent, list projects, pick project, ask for offline mirror). Do not duplicate that prose here; follow it exactly by reference.
+
+2. **Parse every task from the source repo** — identical to step 5b.2 above: `ROADMAP.md` → bucket `roadmap`; `IN_PROGRESS.md` → bucket `in_progress`; `HISTORY.md` → bucket `history`. If source layout is single-file, build a virtual indexed view in memory (deterministic `TASK_NNN` assignment in document order). If indexed, use existing `roadmap/TASK_NNN_*.md` files.
+
+3. **Show the full migration plan.** List every task that will be pushed, grouped by target bucket, with the proposed initial Status from `githubProject.stateMap[<bucket>][0]`. If the user picked `mirror: false`, also list the four local artefacts that will be deleted at the end. The user confirms or aborts here — do not re-prompt at deletion time.
+
+4. **Push each task to the GitHub Project** one by one, in bucket order (`history` first, then `in_progress`, then `roadmap`). For each task:
+   1. Resolve the project's field metadata (field id + option ids for the Status single-select) via the GitHub MCP `projects_get` role — do this once before the loop, not per item.
+   2. Create a draft item via the GitHub MCP `projects_write` role (title + body).
+   3. Set Status to `githubProject.stateMap[<bucket>][0]` using the resolved option id.
+   4. Capture the assigned item node id (`PVTI_...`).
+   5. **Write the id back** to the local task file's YAML frontmatter as `backend: github-project` + `backendId: <PVTI_...>`:
+      - **Indexed source**: update the existing `roadmap/TASK_NNN_*.md` in place.
+      - **Single-file source**: create a new `roadmap/TASK_NNN_<slug>.md` at this point (the in-flight layout flip).
+      - **History entries with no task file**: no task file is created; the Project item is the record going forward.
+   6. **Never use `gh` CLI** for this backend — always the GitHub MCP.
+
+5. **On partial failure** (an individual push fails partway through): **stop immediately**. Surface the error with two lists: (a) item node ids already created; (b) tasks not yet pushed. **Do not write `.roadmap.json`. Do not delete any local files.** Tell the user to reconcile the orphan items manually before re-running. Same behavior as step 5b.5.
+
+6. **All pushes succeeded.** Write `.roadmap.json` at the repo root using the **github-project template** documented in [`/create-roadmap`](create-roadmap.md#roadmapjson--github-project-backend) — reused verbatim (one source of truth). `.roadmap.json` presence is the **atomic checkpoint** of a successful migration.
+
+7. **Branch on `offlineMirror`** — identical to step 5b.7: mirror true → keep local files + idempotent `.gitignore` append; mirror false → delete the four local artefacts (previewed in the plan, no re-prompt).
+
+8. Continue to step 6 (report).
+
 ### 6. Report
 
 - For `files (single-file) → files (indexed)`:
@@ -122,12 +152,14 @@ Run this only at the **root of the target repository**.
 - For `files → linear`:
   - List every Linear id created, grouped by bucket (`history` / `in_progress` / `roadmap`). Cite the Linear team + project so the user can navigate.
   - Note `.roadmap.json` was written.
-  - **`mirror: true`** report:
-    - Local files kept as mirror: `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`.
-    - `.gitignore` lines appended (list each line, or note "all four entries already present").
-  - **`mirror: false`** report:
-    - Local files deleted: list `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, and `roadmap/` (recursive).
-  - Remind the user that the next Linear MCP call (e.g. the next time the skill answers "what's in progress?") may trigger an OAuth browser prompt if it has not already been authorized.
+  - **`mirror: true`** report: local files kept as mirror; `.gitignore` lines appended (or note "all four entries already present").
+  - **`mirror: false`** report: local files deleted: `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/` (recursive).
+  - Remind the user that the next Linear MCP call may trigger an OAuth browser prompt if it has not already been authorized.
+- For `files → github-project`:
+  - List every item node id (`PVTI_...`) created, grouped by bucket. Cite the GitHub Project owner + number so the user can navigate to it.
+  - Note `.roadmap.json` was written.
+  - **`mirror: true`** report: local files kept as mirror; `.gitignore` lines appended (or note "all four entries already present").
+  - **`mirror: false`** report: local files deleted: `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/` (recursive).
 
 ## Direction matrix
 
@@ -136,15 +168,20 @@ Run this only at the **root of the target repository**.
 | `files (single-file) → files (indexed)` | ✅ Supported | Step 5a. Current behavior preserved verbatim. |
 | `files (single-file) → linear` | ✅ Supported | Step 5b. Auto-flips to indexed layout on the local side as part of the migration. |
 | `files (indexed) → linear` | ✅ Supported | Step 5b. Existing `roadmap/TASK_NNN_*.md` files get `backendId` frontmatter written in place. |
+| `files (single-file) → github-project` | ✅ Supported | Step 5c. Auto-flips to indexed layout on the local side as part of the migration. |
+| `files (indexed) → github-project` | ✅ Supported | Step 5c. Existing `roadmap/TASK_NNN_*.md` files get `backendId` frontmatter written in place. |
 | `linear → files` | ❌ Not yet implemented | Reverse migration is out of scope for v1. Run manually if needed: read every Linear issue, write each into a `roadmap/TASK_NNN_*.md` (or back into single-file `ROADMAP.md`), then delete `.roadmap.json`. |
 | `linear → linear` | ❌ No-op | Detected at step 1; refuse with a clear message. Use `/create-roadmap` on a fresh repo if you want to switch teams. |
+| `github-project → files` | ❌ Not yet implemented | Reverse migration is out of scope for v1. |
+| `github-project → github-project` | ❌ No-op | Detected at step 1; refuse with a clear message. |
+| `linear ↔ github-project` | ❌ Not yet implemented | Cross-remote-backend migration is out of scope for v1; planned for task #21 / M9.4. |
 | `files (indexed) → files (single-file)` | ❌ Not yet implemented | The skill's rule is one-way (single-file → indexed); reverse is unsupported. |
 
 When the user invokes an unsupported direction, error out with a message naming source and target and pointing at this table. **Do not silently fall back to a different behavior.**
 
 ## Templates
 
-The `.roadmap.json` template used by step 5b.6 is documented in [`/create-roadmap`](create-roadmap.md). This command reuses it verbatim so there is exactly one source of truth for the config schema.
+The `.roadmap.json` templates used by steps 5b.6 and 5c.6 are documented in [`/create-roadmap`](create-roadmap.md) (the linear backend template and the github-project backend template respectively). This command reuses them verbatim so there is exactly one source of truth for both config schemas.
 
 ## Numbering convention
 
@@ -161,22 +198,24 @@ For `files (single-file) → linear`, the `TASK_NNN` assignment is computed once
 - **Never rewrite or overwrite an existing `roadmap/TASK_NNN_*.md` file** during a `files (single-file) → files (indexed)` migration. If the `roadmap/` directory exists at all when running 5a, abort at step 1 (preconditions). This is the legacy single-direction rule preserved.
 - **Never delete content** during migration. If a heading is ambiguous, prefer creating an over-specified task file (the user can collapse it later) over silently dropping the text.
 - The migration must be reviewable as a single git diff (5a) or a single coherent change set (5b). Do not split it across multiple commits before the user has approved the plan.
-- **For `files → linear`, never write `.roadmap.json` until every Linear push has succeeded.** `.roadmap.json` presence is the atomic checkpoint of a successful migration.
-- **For `files → linear` with `mirror: false`, the deletion of the four local artefacts is destructive.** It must be previewed in step 5b.3's migration plan and confirmed there — do not re-prompt at deletion time, because the user already saw and approved it.
-- If the user wants to abort mid-plan (before approving in step 5a.3 or 5b.3), do not leave partial state — no created Linear issues, no written task files, no modified `.roadmap.json`.
+- **For `files → linear` and `files → github-project`, never write `.roadmap.json` until every push has succeeded.** `.roadmap.json` presence is the atomic checkpoint of a successful migration.
+- **For `files → linear` or `files → github-project` with `mirror: false`, the deletion of the four local artefacts is destructive.** It must be previewed in the step 3 migration plan and confirmed there — do not re-prompt at deletion time, because the user already saw and approved it.
+- If the user wants to abort mid-plan (before approving in step 5a.3, 5b.3, or 5c.3), do not leave partial state — no created issues/items, no written task files, no modified `.roadmap.json`.
 
 ## Arguments
 
 `$ARGUMENTS` is parsed as a space-separated list of bare values and/or flags:
 
-- `--to <files|linear>` — selects the target backend. If omitted, defaults to `files (indexed)` for backward compatibility with the legacy single-direction behavior of this command.
-- `--mirror` / `--no-mirror` — sets the offline mirror toggle. **`--to linear` only.** With `--to files`, error out.
-- `--team <key-or-uuid>` — pre-selects the Linear team without going through the interactive picker. **`--to linear` only.** Validated via MCP team-list either way.
+- `--to <files|linear|github-project>` — selects the target backend. If omitted, defaults to `files (indexed)` for backward compatibility with the legacy single-direction behavior of this command.
+- `--mirror` / `--no-mirror` — sets the offline mirror toggle. **`--to linear` and `--to github-project` only.** With `--to files`, error out.
+- `--team <key-or-uuid>` — pre-selects the Linear team without going through the interactive picker. **`--to linear` only.** Validated via MCP team-list either way. Error out if combined with `--to github-project`.
+- `--project <owner/number-or-id>` — pre-selects the GitHub Project. **`--to github-project` only.** Accepts `<owner>/<number>` (e.g. `acme/7`) or a bare Project node id. Validated against the user's Projects list via the GitHub MCP. Error out if combined with `--to files` or `--to linear`.
 
-Conflicting flags (e.g. `--to files --mirror`, or `--team` with `--to files`) error out with a clear message naming the conflict. Interactive prompting only fires for choices not already in `$ARGUMENTS`.
+Conflicting flags (e.g. `--to files --mirror`, `--team` with `--to files`, `--project acme/7 --to linear`) error out with a clear message naming the conflict. Interactive prompting only fires for choices not already in `$ARGUMENTS`.
 
 Examples:
 
 - `/migrate-roadmap` — legacy behavior: `files (single-file) → files (indexed)`, fully interactive for ambiguous headings only.
 - `/migrate-roadmap --to linear` — fully interactive linear migration: prompts for team and mirror.
 - `/migrate-roadmap --to linear --team ENG --no-mirror` — non-interactive linear migration with auto-delete of local files at the end.
+- `/migrate-roadmap --to github-project --project acme/7 --no-mirror` — non-interactive github-project migration targeting project `acme/7`, with auto-delete of local files at the end.

@@ -1,10 +1,10 @@
 ---
-description: Initialize task tracking at the current repo root. Pick a backend (files-based markdown layout, or Linear via MCP) and write its setup (tracking files, .roadmap.json, MCP registration, .gitignore entries).
+description: Initialize task tracking at the current repo root. Pick a backend (files-based markdown layout, Linear via MCP, or GitHub Projects v2 via the GitHub MCP) and write its setup (tracking files, .roadmap.json, MCP registration, .gitignore entries).
 ---
 
 # /create-roadmap
 
-Initialize task tracking at the root of the current repo. The command picks a backend (`files` or `linear`), creates only the artefacts that backend needs (markdown tracking files for `files`; `.roadmap.json` + MCP registration + optional mirror files for `linear`), and reports exactly what was done. The `roadmap-tracking-flow` skill auto-activates afterwards.
+Initialize task tracking at the root of the current repo. The command picks a backend (`files`, `linear`, or `github-project`), creates only the artefacts that backend needs (markdown tracking files for `files`; `.roadmap.json` + MCP registration + optional mirror files for `linear` or `github-project`), and reports exactly what was done. The `roadmap-tracking-flow` skill auto-activates afterwards.
 
 ## Context
 
@@ -18,7 +18,7 @@ Run this only at the **root of the target repository**. Do not create the files 
    - `roadmap/` directory.
 
 2. **Decide whether to proceed:**
-   - If `.roadmap.json` **already exists**, this repo is already configured. Echo the current `backend` (plus `offlineMirror` and `linear.teamId` if applicable) and **stop**. Mention `/migrate-roadmap` if the user wants to switch backends. Never overwrite `.roadmap.json` from this command.
+   - If `.roadmap.json` **already exists**, this repo is already configured. Echo the current `backend` (plus `offlineMirror` and `linear.teamId` if `backend: "linear"`, or `githubProject.owner`/`projectNumber` if `backend: "github-project"`) and **stop**. Mention `/migrate-roadmap` if the user wants to switch backends. Never overwrite `.roadmap.json` from this command.
    - If `.roadmap.json` is absent but **all four** tracking artefacts (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`) already exist: the repo is already initialized as `backend: files` in indexed layout (implicit — no `.roadmap.json` needed). Stop.
    - If `.roadmap.json` is absent and **the three files** exist but `roadmap/` does not: the repo is already initialized as `backend: files` in single-file layout (implicit). Mention `/migrate-roadmap` if they want to switch to indexed. Stop.
    - Otherwise: continue to step 3.
@@ -26,8 +26,9 @@ Run this only at the **root of the target repository**. Do not create the files 
 3. **Ask the user which backend to use** (unless `$ARGUMENTS` already specifies one — see [Arguments](#arguments) below):
    - **`files`** — markdown tracking files at the repo root. The default. **No `.roadmap.json` is written** — the absence of the file is the signal for `files` mode.
    - **`linear`** — task state lives in [Linear](https://linear.app); the plugin drives state changes via the Linear MCP. `.roadmap.json` is written to record the choice. An optional offline mirror keeps local markdown files in sync with Linear.
+   - **`github-project`** — task state lives in a GitHub Project (Projects v2), driven via the hosted GitHub MCP. `.roadmap.json` is written to record the choice. An optional offline mirror keeps local markdown files in sync with the Project.
 
-4. **Branch on backend.** Use step 5a for `files`, step 5b for `linear`.
+4. **Branch on backend.** Use step 5a for `files`, step 5b for `linear`, step 5c for `github-project`.
 
 5a. **`files` backend setup:**
    1. Ask the user which layout to use (unless `$ARGUMENTS` already specifies one): **single-file** (everything in `ROADMAP.md`) or **indexed** (titles in `ROADMAP.md`, one `roadmap/TASK_NNN_<slug>.md` per task — recommended for projects with long task descriptions or parallel agent workflows).
@@ -62,15 +63,32 @@ Run this only at the **root of the target repository**. Do not create the files 
         **If `.gitignore` does not exist**, do nothing — the user may be working without git, which is a valid setup. Do not auto-create `.gitignore` or `.git`.
    7. Continue to step 6.
 
+5c. **`github-project` backend setup:**
+   1. **Ensure the GitHub MCP is registered.** Inspect the MCP server list. Look for a server whose host matches `api.githubcopilot.com/mcp` or whose registered name matches `github`.
+      - **If already registered** under any matching name/host, **skip the install entirely** — do not re-run `claude mcp add` even though it would be technically idempotent, for the same noise/restart-warning reasons as step 5b.1. Proceed directly to the next bullet.
+      - **If not registered**, run the canonical install command:
+        ```
+        claude mcp add --transport http github https://api.githubcopilot.com/mcp/
+        ```
+        Tell the user: _"A browser window will open the first time we call the GitHub MCP so you can authorize via OAuth 2.1 + PKCE."_
+      - The `projects` toolset is **not** enabled by default. It requires the `project` OAuth scope. An unscoped token makes the toolset look absent — treat a missing toolset as a missing scope, not a missing server. If the toolset is not visible after registration, instruct the user to re-authorize with the `project` scope enabled.
+   2. **List the user's Projects** by calling the GitHub MCP `projects_list` tool. This is typically the first Projects call in this Claude Code installation, so the OAuth 2.1 + PKCE browser flow triggers here. Wait for the user to complete OAuth before proceeding. If OAuth fails or is cancelled, abort step 5c without writing any file or making any further changes.
+   3. **Show the Projects** (owner + project number + title, e.g. `acme/7 — Sprint Board`) and ask the user to pick one. Capture `owner` and `projectNumber` (or the Project node id as `projectId` — acceptable alternative). Unless `$ARGUMENTS` includes `--project <owner/number-or-id>`, in which case validate the supplied value against the MCP project list instead.
+   4. **Ask whether to enable the offline mirror** (unless `$ARGUMENTS` includes `--mirror` / `--no-mirror`) — same semantics as step 5b.4.
+   5. **Write `.roadmap.json`** at the repo root using the [`.roadmap.json` template](#roadmapjson--github-project-backend) below. Fill `githubProject.owner` and `githubProject.projectNumber` from step 5c.3. **Ship the full `githubProject.stateMap` defaults exactly as in the template.** Same field-naming convention as linear: bucket `in_progress` ↔ `githubProject.stateMap.inProgress`.
+   6. **If `offlineMirror: true`** — identical to step 5b.6: create `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md` (indexed layout), an empty `roadmap/` directory, and append the four `.gitignore` lines idempotently (if `.gitignore` exists). If `.gitignore` does not exist, do nothing.
+   7. Continue to step 6.
+
 6. **Report**, in order, every artefact created or modified during this run:
-   - `.roadmap.json` (only when `backend: linear` — flag as "created").
+   - `.roadmap.json` (only when `backend: linear` or `backend: github-project` — flag as "created").
    - Each tracking file (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`) and the `roadmap/` directory — flag as "created" / "skipped (already existed)".
-   - The MCP server registration (only if performed in step 5b.1) — flag as "registered" / "skipped (already registered as <name>)".
-   - `.gitignore` modifications (only if performed in step 5b.6) — list each line added, or note "all four entries already present".
+   - The MCP server registration (only if performed in step 5b.1 or 5c.1) — flag as "registered" / "skipped (already registered as <name>)".
+   - `.gitignore` modifications (only if performed in step 5b.6 or 5c.6) — list each line added, or note "all four entries already present".
 
 7. **Remind the user** that the `roadmap-tracking-flow` skill auto-activates on this repo because the tracking files are now in place. Specifically:
    - For `backend: files`: the skill follows [Operations (`FilesBackend`)](../skills/roadmap-tracking-flow/SKILL.md) — see the section in `SKILL.md`.
    - For `backend: linear`: the skill follows [Operations (`LinearBackend`)](../skills/roadmap-tracking-flow/SKILL.md) — see the section in `SKILL.md`. The first call to a Linear MCP tool (e.g. when the user asks "what's in progress?") will trigger the OAuth browser prompt if it has not already. The skill activates on this repo via the `.roadmap.json`-presence activation predicate regardless of whether `offlineMirror` is on or off.
+   - For `backend: github-project`: the skill follows [Operations (`GitHubProjectBackend`)](../skills/roadmap-tracking-flow/SKILL.md) — see the section in `SKILL.md`. The skill activates via the `.roadmap.json`-presence predicate regardless of whether `offlineMirror` is on or off.
 
 ## Templates
 
@@ -225,6 +243,35 @@ Field notes:
 
 Do **not** write `.roadmap.json` when `backend: files` — the absence of the file is the signal for `files` mode, and the skill defaults accordingly.
 
+### `.roadmap.json` — github-project backend
+
+When `backend: github-project`, write the following at the repo root. Fill `githubProject.owner` and `githubProject.projectNumber` from the Project picked in step 5c.3; keep the `githubProject.stateMap` and `githubProject.historyWindow` defaults unless the user explicitly customizes them.
+
+```json
+{
+  "backend": "github-project",
+  "offlineMirror": false,
+  "githubProject": {
+    "owner": "<org-or-user>",
+    "projectNumber": 7,
+    "historyWindow": "90d",
+    "stateMap": {
+      "roadmap": ["Backlog", "Todo"],
+      "inProgress": ["In Progress"],
+      "history": ["Done", "Cancelled"]
+    }
+  }
+}
+```
+
+Field notes:
+
+- `offlineMirror` — set to whatever the user chose in step 5c.4.
+- `githubProject.projectNumber` — the integer that appears in the Project URL (`/projects/<N>`). Alternatively, the Project node id (`PVT_...`) may be stored as `projectId` in place of `owner` + `projectNumber`; either selector is valid for the MCP calls.
+- `githubProject.stateMap` — defaults match the single-select Status options GitHub ships for new Projects v2 boards.
+- `githubProject.historyWindow` — same semantics and supported values as `linear.historyWindow` (see above). Only meaningful with `offlineMirror: true`; harmless to leave when the mirror is off.
+- **Field-naming convention**: bucket names in operation arguments use snake_case (`in_progress`); the JSON config field uses camelCase (`inProgress`). The mapping is fixed: bucket `in_progress` ↔ field `githubProject.stateMap.inProgress`. Same convention as the linear backend.
+
 ## Numbering convention (indexed layout)
 
 - Files are named `TASK_NNN_<slug>.md` where `NNN` is zero-padded to **three digits** (`TASK_001`, `TASK_042`, `TASK_113`).
@@ -235,15 +282,17 @@ Do **not** write `.roadmap.json` when `backend: files` — the absence of the fi
 
 `$ARGUMENTS` is parsed as a space-separated list of bare values and/or flags. Each value/flag suppresses the matching interactive prompt:
 
-- A bare value `files` or `linear`, or `--backend <files|linear>` — selects the backend.
-- A bare value `single-file` or `indexed`, or `--layout <single-file|indexed>` — selects the layout. **`files` backend only.** When combined with `--backend linear`, error out: linear is always indexed-layout (the mirror layout is implicit; do not let the user pick conflicting options).
-- `--mirror` / `--no-mirror` — enables / disables the offline mirror. **`linear` backend only.** With `--backend files`, error out.
-- `--team <key-or-uuid>` — pre-selects the Linear team without going through the interactive picker. **`linear` backend only.** The MCP team-list call is still made to validate the value; if the key/UUID does not match any team for the authenticated Linear user, error out.
+- A bare value `files`, `linear`, or `github-project`, or `--backend <files|linear|github-project>` — selects the backend.
+- A bare value `single-file` or `indexed`, or `--layout <single-file|indexed>` — selects the layout. **`files` backend only.** When combined with `--backend linear` or `--backend github-project`, error out: both remote backends are always indexed-layout (the mirror layout is implicit; do not let the user pick conflicting options).
+- `--mirror` / `--no-mirror` — enables / disables the offline mirror. **`linear` and `github-project` backends only.** With `--backend files`, error out.
+- `--team <key-or-uuid>` — pre-selects the Linear team without going through the interactive picker. **`linear` backend only.** The MCP team-list call is still made to validate the value; if the key/UUID does not match any team for the authenticated Linear user, error out. Error out if combined with `--backend github-project`.
+- `--project <owner/number-or-id>` — pre-selects the GitHub Project without going through the interactive picker. **`github-project` backend only.** Validated against the user's Projects list via the GitHub MCP `projects_list` tool. Accepts `<owner>/<number>` (e.g. `acme/7`) or a bare Project node id (`PVT_...`). Error out if combined with `--backend files` or `--backend linear`.
 
-If `$ARGUMENTS` includes conflicting flags (e.g. `--backend linear --layout single-file`, or `--mirror --backend files`), error out with a clear message naming the conflict; do **not** silently pick a winner.
+If `$ARGUMENTS` includes conflicting flags (e.g. `--backend linear --layout single-file`, `--mirror --backend files`, `--team ENG --backend github-project`, or `--project acme/7 --backend linear`), error out with a clear message naming the conflict; do **not** silently pick a winner.
 
 Interactive prompting only fires for choices not already specified in `$ARGUMENTS`. Examples:
 
 - `/create-roadmap files indexed` — fully non-interactive for the files backend with indexed layout.
 - `/create-roadmap linear --team ENG --mirror` — fully non-interactive for the linear backend with team `ENG` and offline mirror enabled (the team-list call is still made to validate `ENG`; the user still completes OAuth if it has not been authorized yet).
-- `/create-roadmap` — fully interactive (prompts for backend → then either layout for files, or team + mirror for linear).
+- `/create-roadmap github-project --project acme/7 --mirror` — fully non-interactive for the github-project backend with project `acme/7` and offline mirror enabled (the projects-list call is still made to validate `acme/7`; the user still completes OAuth if it has not been authorized yet).
+- `/create-roadmap` — fully interactive (prompts for backend → then either layout for files, team + mirror for linear, or project + mirror for github-project).
