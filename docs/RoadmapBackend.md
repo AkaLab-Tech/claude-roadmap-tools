@@ -137,6 +137,17 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **`LinearBackend`** — calls the Linear MCP issue-update tool, changing the issue's state to the first state listed in `linear.stateMap.history`. PR metadata is preserved by appending a comment to the Linear issue (or by updating the issue description — implementation choice deferred to the LinearBackend sub-task; either is contract-compliant). When the offline mirror is enabled, the local `HISTORY.md` entry is regenerated from Linear's done state on the next skill activation refresh.
 - **`GitHubProjectBackend`** — uses the item-write operation to set the item's Status field to the first value in `githubProject.stateMap.history`. PR metadata is stored by updating a text field on the item (e.g. a `PR` custom field). When the offline mirror is enabled, the local `HISTORY.md` entry is regenerated on the next skill activation refresh.
 
+### `setReady(id, ready)`
+
+- **Inputs** — `id` (canonical id); `ready` (boolean).
+- **Returns** — the updated readiness state (`true` or `false`) confirming the new value.
+- **Side effects** — the task's readiness marker is set or cleared. Idempotent: setting an already-set marker (or clearing an already-clear one) is a no-op success.
+- **Atomicity** — a single field/label/token write; atomic by construction (one write, no multi-resource transaction).
+- **Errors** — throws `task-not-found` if the id is unknown. Throws `backend-unavailable` when the backend is unreachable.
+- **`FilesBackend`** — the marker is the literal `[ready]` token in the task's ROADMAP entry. Single-file layout: the token is placed immediately after the `- [ ]` checkbox on the task's heading line. Indexed layout: the token is placed immediately after the checkbox if the index link line carries one, or immediately after the leading `- ` bullet marker (before the link) if it does not. `setReady(id,true)` inserts `[ready]`; `setReady(id,false)` removes it. Single in-file edit; idempotent.
+- **`LinearBackend`** — readiness is a dedicated **`Ready` label** on the issue (labels are universally available without per-team custom-field setup). `setReady(id,true)` adds the `Ready` label (resolving it by name; creating it if absent, mirroring how the backend handles other label/state lookups); `setReady(id,false)` removes it. The label name is the literal string `Ready`.
+- **`GitHubProjectBackend`** — set/clear the dedicated **`Ready`** Project field (a boolean or single-select field on the Project item, as documented in the `GitHubProjectBackend` notes' `[ready]` marker bullet) via the **item-field-update** role (`projects_write`). The field id and option id are resolved from the project's field metadata via the project-detail operation first (same field/option-id-resolution pattern as Status). `setReady(id,true)` sets the Ready field; `setReady(id,false)` clears it. A single field-update mutation — atomic.
+
 ### `isAvailable()`
 
 - **Inputs** — none.

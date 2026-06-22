@@ -242,6 +242,17 @@ In **indexed layout**, the `roadmap/TASK_NNN_<slug>.md` file is **kept as the so
 
 **Errors** — throw `task-not-in-progress` if the task is not currently in `in_progress`. Throw on missing required `prMetadata` fields.
 
+### `setReady(id, ready)` — set/clear the readiness marker
+
+The marker is the literal `[ready]` token in the task's ROADMAP entry. This formalizes what `/atelier:plan-task` edits inline today.
+
+- **Single-file layout** — the token is placed immediately after the `- [ ]` checkbox on the task's heading line in `ROADMAP.md`.
+- **Indexed layout** — the index link line in `ROADMAP.md` (the `- [TASK_NNN — <Title>](roadmap/...)` line). The `[ready]` token is placed immediately after the checkbox if the line carries one, or immediately after the leading `- ` bullet marker (before the link) if it does not.
+
+`setReady(id,true)` inserts `[ready]`; `setReady(id,false)` removes it. Idempotent — already-set or already-clear is a no-op success. Single in-file edit.
+
+**Errors** — throw `task-not-found` if the id has no ROADMAP entry.
+
 ### `isAvailable()` — connectivity check
 
 For `FilesBackend`, `isAvailable()` is always `true` — the filesystem is the backend. Once the activation predicate in [When this skill applies](#when-this-skill-applies) matches, operations proceed unconditionally.
@@ -364,6 +375,19 @@ When `offlineMirror: true`, the same operation **also** removes the link entry f
 
 **Errors** — `task-not-in-progress`, missing required `prMetadata` fields, `backend-unavailable`.
 
+### `setReady(id, ready)` — set/clear the readiness label
+
+Readiness is represented as a dedicated **`Ready` label** on the Linear issue. The label name is the literal string `Ready`.
+
+1. Resolve the `Ready` label by name via the Linear MCP. If it does not exist, create it (the same way the backend handles other label/state lookups).
+2. `setReady(id,true)` adds the `Ready` label to the issue via the Linear MCP issue-update (label add) role. `setReady(id,false)` removes it via the issue-update (label remove) role.
+
+Both calls are idempotent — adding an already-present label or removing an already-absent label is a no-op success at the Linear API level.
+
+When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.md` entry (bundle with the Linear call), parallel to how the other write ops mirror.
+
+**Errors** — `task-not-found`, `backend-unavailable`.
+
 ### `isAvailable()` — connectivity check
 
 For `LinearBackend`, `isAvailable()` returns `true` iff a Linear MCP server is registered in Claude Code. The check is:
@@ -480,6 +504,17 @@ This caveat is documented in [`docs/RoadmapBackend.md` — Atomicity and rollbac
 When `offlineMirror: true`, the same operation **also** removes the `IN_PROGRESS.md` link entry and appends the standard `HISTORY.md` entry (entry shape identical to `FilesBackend.appendHistoryEntry` — `### <Title> — YYYY-MM-DD` / `**PR:** [#N](url)` / `**Delivered:** …` / `**Tests:** …` / `**Follow-ups:** …`), bundled with the GitHub item-field-update + comment/note-create calls as one logical transaction.
 
 **Errors** — `task-not-in-progress`, missing required `prMetadata` fields, `backend-unavailable`.
+
+### `setReady(id, ready)` — set/clear the Ready field
+
+Set or clear the dedicated **`Ready`** Project field on the item via the **item-field-update** role (`projects_write`).
+
+1. **Resolve the field id and option id** from the project's field metadata via the project-detail operation (same field/option-id-resolution pattern as Status, documented in the preamble above). The `Ready` field is a boolean or single-select field; locate its id before writing.
+2. `setReady(id,true)` sets the Ready field to its "ready" value. `setReady(id,false)` clears it (sets to the "not ready" value or unsets the field). A single item-field-update mutation — atomic.
+
+When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.md` entry (bundle with the GitHub call), parallel to how the other write ops mirror.
+
+**Errors** — `task-not-found`, `backend-unavailable`.
 
 ### `isAvailable()` — connectivity check
 
