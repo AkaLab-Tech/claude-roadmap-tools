@@ -213,6 +213,65 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **Offline mirror**: when `offlineMirror: true`, the skill maintains the four local paths (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`) as a one-way read-only mirror of the Project's state. The mirror refreshes automatically every time the skill activates. Each local task file carries `backend: github-project` + `backendId: PVTI_...` frontmatter; coherence between local files and remote items is by `backendId`, not by title or slug. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation).
 - **History window for refresh**: `githubProject.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Bounds the cost of `listTasks("history")` on every skill activation. Supported values: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"` (last N entries), or `"all"` (no limit). Items outside the window remain accessible via `getTask(id)` on-demand. Same grammar as `linear.historyWindow`. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation) for the full semantics.
 
+## Reverse reconstruction (remote → files)
+
+This section documents the contract for reading the active remote backend in reverse to rebuild a local indexed-`files` layout. It is the shared read path for two consumers:
+
+- **[Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation)** (SKILL.md) — refreshes a read-only mirror on every skill activation. Uses the default 90-day history window.
+- **[`/migrate-roadmap` step 5d](../commands/migrate-roadmap.md)** — full reconstruct + flip authority to local files (removes `.roadmap.json`). Uses `"all"` history semantics (lossless).
+
+The difference between them is the history window and what happens to `.roadmap.json` at the end. The read contract is identical.
+
+### Bucket → file inversion
+
+The _Buckets_ table above maps each bucket forward (files → remote). This table inverts it for the reconstruction pass:
+
+| Bucket | Remote source | Reconstructed local artefact |
+| :--- | :--- | :--- |
+| `history` | States in `stateMap.history` | `HISTORY.md` entries grouped `## YYYY-MM`, newest first |
+| `in_progress` | States in `stateMap.inProgress` | `IN_PROGRESS.md` index link lines |
+| `roadmap` | States in `stateMap.roadmap` | `ROADMAP.md` index entries + `roadmap/TASK_NNN_<slug>.md` task files |
+
+`listTasks(bucket)` is called for each of the three buckets; `getTask(id)` is called per task to enrich with body and metadata.
+
+### `backendId`-keyed coherence
+
+During the read pass, local task files are matched to remote items by the `backendId` field in their YAML frontmatter — **not** by title or slug. This is consistent with the forward mirror's coherence rule (decision 3 in [TASK_001](../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions)). Remote items without a matching local file get new `roadmap/TASK_NNN_<slug>.md` files with the next sequential `TASK_NNN` (never reuse numbers).
+
+On the **written** files, `backend` and `backendId` frontmatter is deliberately stripped. The strip is the authority-flip: these fields name the remote as canonical source. Writing local files without them makes the local files the canonical source, with no pointer back to the remote. This is the intended end-state of a full `/migrate-roadmap` 5d run; the mirror-refresh variant does NOT strip them (it keeps them for the next coherence pass).
+
+### Round-trip of tracked fields
+
+| Field (remote) | Remote representation | Files representation |
+| :--- | :--- | :--- |
+| `Ready` | Linear label `Ready`; GitHub Project `Ready` field | `[ready]` token on the `ROADMAP.md` index line |
+| `blocked_by` | Plain text field on the remote item | `blocked_by:` YAML frontmatter in the task file |
+| `type` | Custom field on the remote item | `type:` YAML frontmatter in the task file |
+| `estimate` | Custom field on the remote item | `estimate:` YAML frontmatter in the task file |
+| Status / state | `stateMap` value (e.g. `"In Progress"`) | Bucket placement (`IN_PROGRESS.md` / `ROADMAP.md` / `HISTORY.md`) via reverse `stateMap` lookup |
+
+The `stateMap` reverse-lookup maps a remote status label to its bucket: find the bucket whose `stateMap[bucket]` list contains the item's current Status, then write the task into the corresponding local file. The same snake_case ↔ camelCase naming convention (⚠ note in _Buckets_ above) applies.
+
+### Per-bucket safe failure
+
+Each bucket's `listTasks` call is independent. On failure for a single bucket:
+
+- Stop that bucket's reconstruction pass. Do not write the corresponding local file.
+- Keep the previous local snapshot for that bucket intact (if any).
+- Continue with any remaining buckets that have not yet been attempted — or stop all reconstruction if the implementation chooses a stricter all-or-nothing mode. Either mode must surface per-bucket success/failure clearly.
+
+The remote source is **never mutated** during reconstruction. This read-only-against-remote guarantee is explicitly stronger than the forward migration (5b/5c), which creates remote items.
+
+### Lossiness note
+
+Reconstruction is lossless for the §5 task model: title, body, bucket, `type`, `estimate`, `Ready`, and `blocked_by` all round-trip. Remote-only metadata is **inherently dropped** because it has no representation in the files layout:
+
+- Backend-native ids (`ENG-123`, `PVTI_...`) — stripped per the authority-flip rule above.
+- Assignees — no files-layout field.
+- Comment threads — no files-layout field (the equivalent is the `## Status` section in indexed task files, populated only by the user going forward).
+
+Both consumers (mirror-refresh and `/migrate-roadmap` 5d) must document this lossiness in their output.
+
 ### Future backends
 
 `GitHubIssuesBackend`, `JiraBackend`, `TrelloBackend` follow the same contract. Each materialised backend must document:

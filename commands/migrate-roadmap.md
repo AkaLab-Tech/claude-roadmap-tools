@@ -37,6 +37,7 @@ Run this only at the **root of the target repository**.
    - **`files (single-file) → files (indexed)`** → step 5a.
    - **`files (any layout) → linear`** → step 5b.
    - **`files (any layout) → github-project`** → step 5c.
+   - **`linear → files` or `github-project → files`** → step 5d.
 
 ### 5a. `files (single-file) → files (indexed)` _(current behavior preserved)_
 
@@ -143,6 +144,42 @@ Run this only at the **root of the target repository**.
 
 8. Continue to step 6 (report).
 
+### 5d. `<remote backend> → files (indexed)` _(reverse engine; reachable once a direction row is ✅)_
+
+Reconstructs the local indexed-`files` layout from the active remote backend (`linear` or `github-project`) and flips authority to local files by removing `.roadmap.json`. This is the full-reconstruct-and-flip-authority variant of the read procedure documented in the [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation) section of SKILL.md — generalizing it from "refresh a read-only mirror" into "full reconstruct + flip authority to local files". All backend-specific operations are expressed as calls to the **active backend's** contract operations; no Linear-specific or GitHub-Project-specific API calls appear here.
+
+1. **Precondition + availability gate.**
+   - Require `.roadmap.json` to be present and to declare a remote backend (`backend: "linear"` or `backend: "github-project"`). If not, stop with a clear message.
+   - Call the active backend's `isAvailable()`. If `false`, **refuse** — the remote source is unreachable; writing nothing is safer than a partial reconstruction. Tell the user which MCP is missing.
+   - Require a clean working tree (no uncommitted changes to any tracking file or `.roadmap.json`). If not clean, ask the user whether to proceed — a clean tree makes the migration diff reviewable.
+
+2. **Pull all three buckets.**
+   - Call `listTasks("history")`, `listTasks("in_progress")`, `listTasks("roadmap")` against the active backend.
+   - For each task returned, call `getTask(id)` to enrich with body, `type`, `estimate`, the `TASK_NNN` handle (derived from local mirror frontmatter if present, or allocated freshly in the order: `history` first, then `in_progress`, then `roadmap`), `Ready`, `blocked_by`, and `backendId`.
+   - **Use `"all"` history semantics for `listTasks("history")`**: override the 90-day default mirror window — a migration must be lossless. See the [History window table](../skills/roadmap-tracking-flow/SKILL.md#history-window) in SKILL.md for the `"all"` value.
+   - `TASK_NNN` assignment (for items without a matching local mirror file): sequential, deterministic, in document order across buckets (`history` first, then `in_progress`, then `roadmap`). This ordering guarantees a failed-and-retried migration produces the same numbering.
+
+3. **Show the full reconstruction plan before writing anything.**
+   - List every task, grouped by destination: `HISTORY.md` entries, `IN_PROGRESS.md` link(s), and the `roadmap/TASK_NNN_<slug>.md` files to be created with their proposed filenames.
+   - State **explicitly** that `.roadmap.json` will be **removed** as part of this migration.
+   - Note explicitly that `backend`/`backendId` frontmatter will be **stripped** from every written task file (see step 5d.4).
+   - Confirm or abort here. Zero side effects until the user confirms — no files written, no remote state mutated.
+
+4. **Reconstruct the indexed `files` layout atomically** (write all task files and index files as a single change set after the user confirms):
+   - **Per task → `roadmap/TASK_NNN_<slug>.md`**: write the task body and any frontmatter fields (`type`, `estimate`). **Strip `backend` and `backendId` from the written frontmatter.** The strip is the authority-flip: these fields name the remote as the canonical source; once written to local files without them, local files become the canonical source, and there is no pointer back to the remote.
+   - **`ROADMAP.md`** — rebuild as a §5 index: map each remote item's Status → priority section via the active backend's `stateMap` **reverse-lookup** (e.g. a Linear issue in state `Backlog` → `linear.stateMap.roadmap` match → `## Backlog` or `## Medium Priority` section, as appropriate); add `[ready]` marker to the index line if the item's `Ready` field/label is set; add `blocked_by:` metadata if the item's `blocked_by` field is non-empty.
+   - **`IN_PROGRESS.md`** — write one index link line per `in_progress` bucket task.
+   - **`HISTORY.md`** — write entries grouped `## YYYY-MM`, newest first, matching the [`appendHistoryEntry` entry shape](../skills/roadmap-tracking-flow/SKILL.md#appendhistoryentryid-prmetadata--logging-completed-work).
+
+5. **Remove `.roadmap.json` as the inverse atomic checkpoint.** Its **absence** signals that local files are now authoritative — the inverse of the forward migration's `.roadmap.json` presence convention (5b.6 / 5c.6). State this inversion explicitly when reporting. The remote source is left entirely untouched.
+
+6. **Partial-failure guard.**
+   - On any `listTasks` / `getTask` failure in step 5d.2, or any file-write failure in step 5d.4: **stop immediately**. Write nothing destructive. Leave `.roadmap.json` in place. **Never touch or mutate the remote source** (this direction is read-only against the remote). Report per-bucket success/failure with the underlying error.
+   - The reverse path being read-only against the remote is an inherent safety advantage over the forward 5b/5c paths, which create remote items. If the reconstruction fails partway, the user can simply re-run — the remote source is unmodified.
+   - **Lossiness note**: reconstruction is lossless for the §5 task model (title, body, bucket, `type`, `estimate`, `Ready`, `blocked_by`). Remote-only metadata — backend-native ids (`ENG-123`, `PVTI_...`), assignees, and comment threads — is inherently dropped. Document this in the report.
+
+7. Continue to step 6 (report).
+
 ### 6. Report
 
 - For `files (single-file) → files (indexed)`:
@@ -160,6 +197,11 @@ Run this only at the **root of the target repository**.
   - Note `.roadmap.json` was written.
   - **`mirror: true`** report: local files kept as mirror; `.gitignore` lines appended (or note "all four entries already present").
   - **`mirror: false`** report: local files deleted: `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/` (recursive).
+- For `<remote backend> → files (indexed)`:
+  - List every `roadmap/TASK_NNN_<slug>.md` created, plus the rebuilt index files (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`).
+  - Note that `.roadmap.json` was **removed** and local files are now authoritative.
+  - Note the remote source was left entirely untouched (read-only against remote).
+  - Call out explicitly what was dropped (remote-only metadata: backend-native ids, assignees, comment threads) — see step 5d.6 lossiness note.
 
 ## Direction matrix
 
@@ -170,9 +212,9 @@ Run this only at the **root of the target repository**.
 | `files (indexed) → linear` | ✅ Supported | Step 5b. Existing `roadmap/TASK_NNN_*.md` files get `backendId` frontmatter written in place. |
 | `files (single-file) → github-project` | ✅ Supported | Step 5c. Auto-flips to indexed layout on the local side as part of the migration. |
 | `files (indexed) → github-project` | ✅ Supported | Step 5c. Existing `roadmap/TASK_NNN_*.md` files get `backendId` frontmatter written in place. |
-| `linear → files` | ❌ Not yet implemented | Reverse migration is out of scope for v1. Run manually if needed: read every Linear issue, write each into a `roadmap/TASK_NNN_*.md` (or back into single-file `ROADMAP.md`), then delete `.roadmap.json`. |
+| `linear → files` | ❌ Not yet implemented | Engine present at step 5d; not yet routed (direction row flipped by task #21b). |
 | `linear → linear` | ❌ No-op | Detected at step 1; refuse with a clear message. Use `/create-roadmap` on a fresh repo if you want to switch teams. |
-| `github-project → files` | ❌ Not yet implemented | Reverse migration is out of scope for v1. |
+| `github-project → files` | ❌ Not yet implemented | Engine present at step 5d; not yet routed (direction row flipped by task #21c). |
 | `github-project → github-project` | ❌ No-op | Detected at step 1; refuse with a clear message. |
 | `linear ↔ github-project` | ❌ Not yet implemented | Cross-remote-backend migration is out of scope for v1; planned for task #21 / M9.4. |
 | `files (indexed) → files (single-file)` | ❌ Not yet implemented | The skill's rule is one-way (single-file → indexed); reverse is unsupported. |
