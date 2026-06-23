@@ -1,14 +1,15 @@
 ---
-description: Migrate task tracking between backends or layouts. v1 supports `files (single-file) → files (indexed)`, `files (any layout) → linear` (Linear via MCP), and `files (any layout) → github-project` (GitHub Projects v2 via the GitHub MCP), each with an optional offline mirror. Other directions error out as "not yet implemented".
+description: Migrate task tracking between backends or layouts. v1 supports `files (single-file) → files (indexed)`, `files (any layout) → linear` (Linear via MCP), `files (any layout) → github-project` (GitHub Projects v2 via the GitHub MCP), and `github-project → files (indexed)` (reverse reconstruction, step 5d), each with an optional offline mirror where applicable. Other directions error out as "not yet implemented".
 ---
 
 # /migrate-roadmap
 
-Migrate this repo's task tracking from one backend (or layout) to another. v1 supports three directions:
+Migrate this repo's task tracking from one backend (or layout) to another. v1 supports four directions:
 
 1. **`files (single-file) → files (indexed)`** — convert a single-file layout to indexed (titles in `ROADMAP.md`, one `roadmap/TASK_NNN_<slug>.md` per task).
 2. **`files (any layout) → linear`** — push every existing task to Linear via the Linear MCP, write `backend: linear` + `backendId: <linear-id>` into each local task file's frontmatter, persist `.roadmap.json`, and either keep the local files as an offline mirror or delete them.
 3. **`files (any layout) → github-project`** — push every existing task to a GitHub Project (Projects v2) via the hosted GitHub MCP, write `backend: github-project` + `backendId: <item-id>` into each local task file's frontmatter, persist `.roadmap.json`, and either keep the local files as an offline mirror or delete them.
+4. **`github-project → files (indexed)`** — reconstruct the indexed `files` layout from the live GitHub Project via step 5d (the backend-agnostic reverse engine), strip `backend`/`backendId` from every task file, and remove `.roadmap.json` to flip authority to local files. Read-only against the remote.
 
 Other directions error out with `not yet implemented` — see the [Direction matrix](#direction-matrix).
 
@@ -22,14 +23,14 @@ Run this only at the **root of the target repository**.
    - `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md` must all exist at the repo root. If any is missing, tell the user to run `/create-roadmap` first and stop.
    - **Determine the source backend** by reading `.roadmap.json` if present:
      - File present + `backend: "linear"` → source backend is `linear`. This command refuses to migrate **away from `linear`** in v1 (see [Direction matrix](#direction-matrix)). Stop with a clear message.
-     - File present + `backend: "github-project"` → source backend is `github-project`. This command refuses to migrate **away from `github-project`** in v1 (see [Direction matrix](#direction-matrix)). Stop with a clear message.
+     - File present + `backend: "github-project"` → source backend is `github-project`. A `--to files` target is **supported** (routes to step 5d, the reverse engine). The other directions away from `github-project` still refuse: `github-project → github-project` is a no-op, and `github-project → linear` is a cross-remote migration out of scope for v1 (route via `files` — see [Direction matrix](#direction-matrix)). For those, stop with a clear message.
      - File present + `backend: "files"` (explicit) → source backend is `files`.
      - File absent → source backend is `files` (implicit default).
    - **Determine the source layout** (only meaningful for `files` source): if a `roadmap/` directory exists at the root, source layout is `indexed`; otherwise `single-file`.
    - **Detect orphan partial-migration state.** When `.roadmap.json` is **absent** AND `roadmap/` exists, scan every `roadmap/TASK_NNN_*.md` for a `backendId` field in YAML frontmatter. If any file has `backendId` set, this is an orphan state left over from a previously-failed `files → linear` or `files → github-project` migration (see steps 5b.5 and 5c.5). **Refuse to proceed.** Surface the list of orphan task files with their `backendId`s and tell the user to reconcile manually before re-running: either delete the orphan task files (and, optionally, the matching issues/items in the target backend to avoid duplicates), or strip the `backendId` frontmatter to re-include those tasks in a fresh migration. This precondition guards against creating duplicate items on retry.
    - If the working tree has uncommitted changes to any tracking file or to `.roadmap.json`, ask the user whether to proceed. A clean working tree makes the migration diff easier to review.
 
-2. **Resolve target backend (and layout).** Either from `$ARGUMENTS` (`--to <files|linear|github-project>`) or via interactive prompt. For `--to files`, the target layout is `indexed` (single-file → single-file is a no-op; indexed → indexed is a no-op).
+2. **Resolve target backend (and layout).** Either from `$ARGUMENTS` (`--to <files|linear|github-project>`) or via interactive prompt. For `--to files`, the target layout is `indexed` (single-file → single-file is a no-op; indexed → indexed is a no-op). When the **source** backend is remote (`github-project`; `linear` once #21c lands) and `--to files` is given, the resolved direction is `<remote> → files (indexed)` → step 5d, not the 5a single-file→indexed path. `--to files` therefore accepts a remote source, not only the legacy `files` single→indexed case.
 
 3. **Validate direction.** Look up [Direction matrix](#direction-matrix). If the resolved direction is not supported in v1, error out with a clear message naming source and target.
 
@@ -180,6 +181,28 @@ Reconstructs the local indexed-`files` layout from the active remote backend (`l
 
 7. Continue to step 6 (report).
 
+#### Fidelity (`files → github-project → files` round-trip)
+
+The following describes what survives and what is lost when authority is flipped back to local files (extending the lossiness note in step 5d.6).
+
+**Preserved (round-trips losslessly):**
+- Task title and body.
+- `type` and `estimate` frontmatter fields.
+- The `TASK_NNN` human handle (keyed by the `#id`-style field on the Project item, or reallocated deterministically if absent).
+- The bucket (via the Project's Status field → `stateMap` reverse-lookup).
+- `[ready]` marker (via the Project's Ready field).
+- `blocked_by` (via the Project's `blocked_by` text field).
+- History entries (reconstructed from the Project's `history` bucket items).
+
+**Inherently lossy (no `files` representation — dropped on the authority flip, per the approved §5-scoped lossiness decision):**
+- The `PVTI_...` Project item node id — dropped when `backendId` is stripped; this is the backend-native id for the `github-project` backend.
+- Project-native fields not present in the §5 task model (custom fields, labels, assignees, milestones, etc.).
+- GitHub assignees and comment threads.
+
+**`stateMap`-multi-value caveat:** when a bucket maps to multiple Status values (e.g. `roadmap: ["Backlog","Todo"]`), a task in `Todo` and one in `Backlog` both reverse-map to the same `roadmap` bucket — the intra-bucket sub-distinction is lost.
+
+**`<slug>` is cosmetic:** the round-trip is keyed on `TASK_NNN` + content, not the exact filename slug. A regenerated slug that differs from the original is not a fidelity loss.
+
 ### 6. Report
 
 - For `files (single-file) → files (indexed)`:
@@ -201,7 +224,7 @@ Reconstructs the local indexed-`files` layout from the active remote backend (`l
   - List every `roadmap/TASK_NNN_<slug>.md` created, plus the rebuilt index files (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`).
   - Note that `.roadmap.json` was **removed** and local files are now authoritative.
   - Note the remote source was left entirely untouched (read-only against remote).
-  - Call out explicitly what was dropped (remote-only metadata: backend-native ids, assignees, comment threads) — see step 5d.6 lossiness note.
+  - Call out explicitly what was dropped (remote-only metadata: backend-native ids, assignees, comment threads) — see step 5d.6 lossiness note. For the `github-project` backend, the dropped backend-native ids are the `PVTI_...` Project item node ids.
 
 ## Direction matrix
 
@@ -214,9 +237,9 @@ Reconstructs the local indexed-`files` layout from the active remote backend (`l
 | `files (indexed) → github-project` | ✅ Supported | Step 5c. Existing `roadmap/TASK_NNN_*.md` files get `backendId` frontmatter written in place. |
 | `linear → files` | ❌ Not yet implemented | Engine present at step 5d; not yet routed (direction row flipped by task #21b). |
 | `linear → linear` | ❌ No-op | Detected at step 1; refuse with a clear message. Use `/create-roadmap` on a fresh repo if you want to switch teams. |
-| `github-project → files` | ❌ Not yet implemented | Engine present at step 5d; not yet routed (direction row flipped by task #21c). |
+| `github-project → files` | ✅ Supported | Step 5d (the backend-agnostic reverse engine). Reconstructs the indexed `files` layout from the Project, strips `backend`/`backendId`, and removes `.roadmap.json` to flip authority to local files. Read-only against the remote. |
 | `github-project → github-project` | ❌ No-op | Detected at step 1; refuse with a clear message. |
-| `linear ↔ github-project` | ❌ Not yet implemented | Cross-remote-backend migration is out of scope for v1; planned for task #21 / M9.4. |
+| `linear ↔ github-project` | ❌ Not yet implemented | Cross-remote migration is out of scope for v1; do NOT automate it. The supported path is to **route via `files`**: `github-project → files` (step 5d), then `files → linear` (step 5b). Same in reverse for `linear → github-project` once `linear → files` lands (#21c). |
 | `files (indexed) → files (single-file)` | ❌ Not yet implemented | The skill's rule is one-way (single-file → indexed); reverse is unsupported. |
 
 When the user invokes an unsupported direction, error out with a message naming source and target and pointing at this table. **Do not silently fall back to a different behavior.**
@@ -243,6 +266,7 @@ For `files (single-file) → linear`, the `TASK_NNN` assignment is computed once
 - **For `files → linear` and `files → github-project`, never write `.roadmap.json` until every push has succeeded.** `.roadmap.json` presence is the atomic checkpoint of a successful migration.
 - **For `files → linear` or `files → github-project` with `mirror: false`, the deletion of the four local artefacts is destructive.** It must be previewed in the step 3 migration plan and confirmed there — do not re-prompt at deletion time, because the user already saw and approved it.
 - If the user wants to abort mid-plan (before approving in step 5a.3, 5b.3, or 5c.3), do not leave partial state — no created issues/items, no written task files, no modified `.roadmap.json`.
+- **The `<remote backend> → files` reverse path (step 5d) is read-only against the remote.** No Project item (or Linear issue) is created, updated, or deleted; the remote source is left entirely untouched. If the reconstruction fails partway through, `.roadmap.json` is left in place and the user can simply re-run — there is no remote cleanup required.
 
 ## Arguments
 
@@ -261,3 +285,4 @@ Examples:
 - `/migrate-roadmap --to linear` — fully interactive linear migration: prompts for team and mirror.
 - `/migrate-roadmap --to linear --team ENG --no-mirror` — non-interactive linear migration with auto-delete of local files at the end.
 - `/migrate-roadmap --to github-project --project acme/7 --no-mirror` — non-interactive github-project migration targeting project `acme/7`, with auto-delete of local files at the end.
+- `/migrate-roadmap --to files` (run inside a `github-project`-backed repo) — reverse reconstruction via step 5d: pulls all tasks from the GitHub Project, rebuilds the indexed `files` layout, and removes `.roadmap.json` to flip authority to local files.
