@@ -169,7 +169,7 @@ Reconstructs the local indexed-`files` layout from the active remote backend (`l
    - **Per task → `roadmap/TASK_NNN_<slug>.md`**: write the task body and any frontmatter fields (`type`, `estimate`). **Strip `backend` and `backendId` from the written frontmatter.** The strip is the authority-flip: these fields name the remote as the canonical source; once written to local files without them, local files become the canonical source, and there is no pointer back to the remote.
    - **`ROADMAP.md`** — rebuild as a §5 index: map each remote item's Status → priority section via the active backend's `stateMap` **reverse-lookup** (e.g. a Linear issue in state `Backlog` → `linear.stateMap.roadmap` match → `## Backlog` or `## Medium Priority` section, as appropriate); add `[ready]` marker to the index line if the item's `Ready` field/label is set; add `blocked_by:` metadata if the item's `blocked_by` field is non-empty.
    - **`IN_PROGRESS.md`** — write one index link line per `in_progress` bucket task.
-   - **`HISTORY.md`** — write entries grouped `## YYYY-MM`, newest first, matching the [`appendHistoryEntry` entry shape](../skills/roadmap-tracking-flow/SKILL.md#appendhistoryentryid-prmetadata-logging-completed-work).
+   - **`HISTORY.md`** — write entries grouped `## YYYY-MM`, newest first, matching the [`appendHistoryEntry` entry shape](../skills/roadmap-tracking-flow/SKILL.md#appendhistoryentryid-prmetadata--logging-completed-work).
 
 5. **Remove `.roadmap.json` as the inverse atomic checkpoint.** Its **absence** signals that local files are now authoritative — the inverse of the forward migration's `.roadmap.json` presence convention (5b.6 / 5c.6). State this inversion explicitly when reporting. The remote source is left entirely untouched.
 
