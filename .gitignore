@@ -9,3 +9,8 @@
 
 # Logs
 *.log
+
+# atelier — appended by /setup-project
+.task-log/
+.claude/settings.json
+.claude/settings.local.json
