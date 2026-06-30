@@ -8,6 +8,8 @@ Backlog index. Tasks flow: `ROADMAP.md` → `IN_PROGRESS.md` → `HISTORY.md`. D
 
 ## 🎯 P1 — Next
 
+- [ ] [ready] `feat` `RoadmapBackend.setPlan/getPlan` — store/read the task plan in the backend item body (delimited section) so atelier can keep plans backend-resident for remote backends `#6` `~TODO`
+
 ## 💭 P2 — Backlog
 
 > Future backends — materialize into a task once the multi-backend foundation (TASK_001) is proven and a concrete user need is confirmed for each.
