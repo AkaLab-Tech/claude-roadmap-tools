@@ -9,5 +9,3 @@ When a PR closes a task, the **same PR** must update both `IN_PROGRESS.md` (remo
 ---
 
 <!-- Indexed layout: link to roadmap/TASK_NNN_<slug>.md and write progress notes inside that file, not here. -->
-
-- [ ] [ready] `feat` `RoadmapBackend.setPlan/getPlan` — store/read the task plan in the backend item body (delimited section) so atelier can keep plans backend-resident for remote backends `#6` `~TODO`
