@@ -253,6 +253,15 @@ The marker is the literal `[ready]` token in the task's ROADMAP entry. This form
 
 **Errors** — throw `task-not-found` if the id has no ROADMAP entry.
 
+### `setPlan(id, markdown)` / `getPlan(id)` — store or retrieve the task plan
+
+The plan for a task lives in `.plan/<id>.md`, keyed by the **numeric task id** (e.g. `.plan/6.md` for `TASK_006`). No delimiter markers are used in `FilesBackend` — the file is the plan content verbatim.
+
+- **`setPlan(id, markdown)`** — write (or overwrite) `.plan/<id>.md` with the given markdown content.
+- **`getPlan(id)`** — read `.plan/<id>.md` and return its contents. Missing file → returns empty (no plan; not an error).
+
+**Errors** — throw `task-not-found` if the task has no ROADMAP entry. Missing `.plan/<id>.md` is not an error for `getPlan`.
+
 ### `isAvailable()` — connectivity check
 
 For `FilesBackend`, `isAvailable()` is always `true` — the filesystem is the backend. Once the activation predicate in [When this skill applies](#when-this-skill-applies) matches, operations proceed unconditionally.
@@ -388,6 +397,15 @@ When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.m
 
 **Errors** — `task-not-found`, `backend-unavailable`.
 
+### `setPlan(id, markdown)` / `getPlan(id)` — store or retrieve the task plan
+
+The plan lives in the issue description, fenced by `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` delimiters. See [`docs/RoadmapBackend.md` — `setPlan`](../../docs/RoadmapBackend.md) for the canonical delimiter semantics (missing → empty, duplicate → first wins).
+
+- **`setPlan(id, markdown)`** — fetch the current description via issue-fetch; rewrite the content of the first delimiter pair (or append a fresh delimited section if absent); call issue-update. When `offlineMirror: true`, also write `.plan/<id>.md` locally (bundled with the Linear call), parallel to how `setReady` mirrors the `[ready]` token.
+- **`getPlan(id)`** — fetch the issue description via issue-fetch and extract the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` pair. No markers → returns empty.
+
+**Errors** — `task-not-found`, `backend-unavailable`.
+
 ### `isAvailable()` — connectivity check
 
 For `LinearBackend`, `isAvailable()` returns `true` iff a Linear MCP server is registered in Claude Code. The check is:
@@ -516,6 +534,15 @@ When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.m
 
 **Errors** — `task-not-found`, `backend-unavailable`.
 
+### `setPlan(id, markdown)` / `getPlan(id)` — store or retrieve the task plan
+
+The plan lives in the item's draft-issue or linked-issue body, fenced by `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` delimiters. See [`docs/RoadmapBackend.md` — `setPlan`](../../docs/RoadmapBackend.md) for the canonical delimiter semantics (missing → empty, duplicate → first wins).
+
+- **`setPlan(id, markdown)`** — fetch the current body via item-fetch; rewrite the content of the first delimiter pair (or append a fresh delimited section if absent); call item-write (body update). When `offlineMirror: true`, also write `.plan/<id>.md` locally (bundled with the GitHub call), parallel to the `setReady` offline-mirror pattern.
+- **`getPlan(id)`** — fetch the item body via item-fetch and extract the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` pair. No markers → returns empty.
+
+**Errors** — `task-not-found`, `backend-unavailable`.
+
 ### `isAvailable()` — connectivity check
 
 For `GitHubProjectBackend`, `isAvailable()` returns `true` iff a GitHub MCP server is registered in Claude Code. The check is:
@@ -561,6 +588,7 @@ On every skill activation in such a repo, the skill performs a mirror refresh **
    - Match local task files to remote items by `backendId` in YAML frontmatter, **not** by title or slug.
    - New remote items that have no matching local file get new `roadmap/TASK_NNN_*.md` files with the next sequential `TASK_NNN` (per the [Numbering convention](../../commands/create-roadmap.md) — never reuse numbers).
    - Local task files whose `backendId` no longer exists remotely are **flagged in the warning** at the start of the answer (e.g. `TASK_042 — backendId no longer exists in the remote backend (Linear issue / GitHub Project item); left in place for review`) but **not auto-deleted**. The user decides whether to remove them.
+   - When writing each `roadmap/TASK_NNN_*.md` file from a remote item's body, **split the `atelier:plan` section out of the body first**: extract the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` pair, write the remainder to `roadmap/TASK_NNN_*.md`, and materialize the extracted plan as `.plan/<id>.md` (numeric id). If no delimiter markers are present, write the body as-is and skip the `.plan/<id>.md` write.
 
 5. **Safe failure mode**:
    - If any individual `listTasks` call fails mid-refresh, **stop that bucket's refresh** and keep the previous local snapshot for that bucket intact. Do **not** half-write the bucket's files.
