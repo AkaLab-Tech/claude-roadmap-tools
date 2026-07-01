@@ -148,6 +148,31 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **`LinearBackend`** — readiness is a dedicated **`Ready` label** on the issue (labels are universally available without per-team custom-field setup). `setReady(id,true)` adds the `Ready` label (resolving it by name; creating it if absent, mirroring how the backend handles other label/state lookups); `setReady(id,false)` removes it. The label name is the literal string `Ready`.
 - **`GitHubProjectBackend`** — set/clear the dedicated **`Ready`** Project field (a boolean or single-select field on the Project item, as documented in the `GitHubProjectBackend` notes' `[ready]` marker bullet) via the **item-field-update** role (`projects_write`). The field id and option id are resolved from the project's field metadata via the project-detail operation first (same field/option-id-resolution pattern as Status). `setReady(id,true)` sets the Ready field; `setReady(id,false)` clears it. A single field-update mutation — atomic.
 
+### `setPlan(id, markdown)`
+
+- **Inputs** — `id` (canonical id); `markdown` (the plan content as a markdown string).
+- **Returns** — nothing (void).
+- **Side effects** — the plan content is stored backend-resident. Rewrite-in-place: if the body already contains a `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` marker pair, the content between the first such pair is replaced with the new `markdown`. If no marker pair is present, a fresh `<!-- atelier:plan:start -->` … `<!-- atelier:plan:end -->` section is appended to the body.
+- **Atomicity** — a single body / description / file write; atomic by construction.
+- **Errors** — throws `task-not-found` if the id is unknown. Throws `backend-unavailable` when the backend is unreachable.
+- **Delimiter semantics (canonical reference)** — the delimiter pair `<!-- atelier:plan:start -->` … `<!-- atelier:plan:end -->` fences the plan section inside a remote item body / issue description. Two degenerate cases:
+  - **Missing markers**: `getPlan` returns empty / none (not an error); `setPlan` appends a fresh delimited section.
+  - **Duplicate markers** (multiple `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` pairs in the same body): first match wins. `getPlan` reads the content between the first pair; `setPlan` rewrites the content of the first pair and leaves any trailing duplicate sections untouched. This is a known-degenerate case; no auto-cleanup is performed.
+- **`FilesBackend`** — the plan lives in `.plan/<id>.md`, keyed by the **numeric task id** (e.g. `.plan/6.md` for task `TASK_006`). `setPlan` writes or overwrites this file. No delimiter markers are used — the file is the plan content verbatim.
+- **`LinearBackend`** — the plan lives in the issue description, fenced by the delimiter pair. `setPlan` fetches the current description via issue-fetch, rewrites or appends the delimited section, then calls issue-update. When `offlineMirror: true`, also writes `.plan/<id>.md` locally (bundled with the Linear call), parallel to how `setReady` mirrors the `[ready]` token.
+- **`GitHubProjectBackend`** — the plan lives in the item's draft-issue or linked-issue body, fenced by the same delimiter pair. `setPlan` fetches the current body via item-fetch, rewrites or appends the delimited section, then calls item-write (body update). When `offlineMirror: true`, also writes `.plan/<id>.md` locally (bundled with the GitHub call), parallel to the `setReady` offline-mirror pattern.
+
+### `getPlan(id)`
+
+- **Inputs** — `id` (canonical id).
+- **Returns** — the plan content as a markdown string, or empty / none if no plan has been set.
+- **Side effects** — none (read-only).
+- **Atomicity** — read-only; no atomicity concern.
+- **Errors** — throws `task-not-found` if the id is unknown. Throws `backend-unavailable` when the backend is unreachable.
+- **`FilesBackend`** — reads `.plan/<id>.md` (numeric id, e.g. `.plan/6.md`). Missing file → returns empty (no plan; not an error).
+- **`LinearBackend`** — fetches the issue description via issue-fetch and extracts the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` marker pair. No markers → returns empty.
+- **`GitHubProjectBackend`** — fetches the item body via item-fetch and extracts the content between the first marker pair. No markers → returns empty.
+
 ### `isAvailable()`
 
 - **Inputs** — none.
@@ -249,6 +274,7 @@ On the **written** files, `backend` and `backendId` frontmatter is deliberately 
 | `type` | Custom field on the remote item | `type:` YAML frontmatter in the task file |
 | `estimate` | Custom field on the remote item | `estimate:` YAML frontmatter in the task file |
 | Status / state | `stateMap` value (e.g. `"In Progress"`) | Bucket placement (`IN_PROGRESS.md` / `ROADMAP.md` / `HISTORY.md`) via reverse `stateMap` lookup |
+| `plan` | `<!-- atelier:plan:start -->` … `<!-- atelier:plan:end -->` delimited section in the item body / issue description | `.plan/<numeric-id>.md` (e.g. `.plan/6.md`) |
 
 The `stateMap` reverse-lookup maps a remote status label to its bucket: find the bucket whose `stateMap[bucket]` list contains the item's current Status, then write the task into the corresponding local file. The same snake_case ↔ camelCase naming convention (⚠ note in _Buckets_ above) applies.
 
@@ -264,7 +290,7 @@ The remote source is **never mutated** during reconstruction. This read-only-aga
 
 ### Lossiness note
 
-Reconstruction is lossless for the §5 task model: title, body, bucket, `type`, `estimate`, `Ready`, and `blocked_by` all round-trip. Remote-only metadata is **inherently dropped** because it has no representation in the files layout:
+Reconstruction is lossless for the §5 task model: title, body, bucket, `type`, `estimate`, `Ready`, `blocked_by`, and the plan all round-trip. The `atelier:plan` delimited section is **extracted out of** the item body / issue description during reconstruction (so it never bleeds into the written `roadmap/TASK_NNN_*.md` body) and materialized as `.plan/<numeric-id>.md` — lossless. Remote-only metadata is **inherently dropped** because it has no representation in the files layout:
 
 - Backend-native ids (`ENG-123`, `PVTI_...`) — stripped per the authority-flip rule above.
 - Assignees — no files-layout field.
@@ -293,3 +319,5 @@ This contract is part of the plugin's public surface. Breaking changes (renaming
 3. A new section in this document describing the migration path.
 
 Non-breaking additions (a new optional field on a task, a new optional metadata key) do **not** require a version bump but must be documented in the relevant operation section.
+
+**v0.8.0** — additive minor bump: `setPlan(id, markdown)` and `getPlan(id)` are new public operations (non-breaking; existing callers are unaffected).

@@ -6,6 +6,24 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ---
 
+## 2026-07
+
+### TASK_006 — RoadmapBackend.setPlan/getPlan (backend-resident plans) — 2026-07-01
+**PR:** [#31](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/31)
+
+Extends the `RoadmapBackend` contract with `setPlan(id, markdown)` and `getPlan(id)` — the two operations atelier needs to keep task plans backend-resident on remote backends (Linear, GitHub Projects v2), rather than in ephemeral local files. Motivated by the atelier requirement that `plan-task` call `backend.setPlan` so a plan survives a worktree teardown and `next-task` call `backend.getPlan` on re-entry.
+
+**Delivered:**
+- `docs/RoadmapBackend.md` — new `setPlan` and `getPlan` operation specs for all three backends (FilesBackend / LinearBackend / GitHubProjectBackend), delimiter semantics (`<!-- atelier:plan:start/end -->`, missing → empty, duplicate → first-match wins), and round-trip entry in the Reverse reconstruction table.
+- `skills/roadmap-tracking-flow/SKILL.md` — matching `setPlan/getPlan` sub-sections for FilesBackend, LinearBackend, and GitHubProjectBackend; mirror-refresh reconstruction rule updated to strip and materialize the `atelier:plan` delimited section out of the body during per-task file writes.
+- `commands/migrate-roadmap.md` — forward legs (files → linear, files → github-project) fold `.plan/<id>.md` into the item body as a delimited section; the reverse leg (5d) strips it back out and materializes `.plan/<id>.md`; lossiness note updated to include plan.
+- `.claude-plugin/plugin.json` bumped to **`0.8.0`** (additive minor — two new public operations; existing callers unaffected).
+
+**Tests:** prose/JSON coherence — no test runner (pure-prose plugin). `plugin.json` valid JSON at v0.8.0 (python3 json.tool exit 0). Delimiter strings byte-consistent across all four files. All 7 acceptance criteria confirmed by tester inspection.
+
+**Follow-ups:**
+- atelier implementation: `plan-task` calls `backend.setPlan(id, plan)` after composing the plan; `next-task` calls `backend.getPlan(id)` on re-entry. Tracked in [atelier](https://github.com/AkaLab-Tech/atelier) as the consumer of this contract addition.
+
 ## 2026-06
 
 ### TASK_002 — `/adopt-roadmap` command — 2026-06-03

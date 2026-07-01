@@ -83,7 +83,7 @@ Run this only at the **root of the target repository**.
 3. **Show the full migration plan.** List every task that will be pushed, grouped by target bucket (`history` / `in_progress` / `roadmap`). For each task, show its proposed Linear initial state from `linear.stateMap[<bucket>][0]`. If the user picked `mirror: false`, **also list the four local artefacts that will be deleted at the end of the migration**: `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`. The user sees this destructive consequence in the plan and confirms or aborts here — do not re-prompt at deletion time.
 
 4. **Push tasks to Linear** one by one, in bucket order: `history` first, then `in_progress`, then `roadmap`. For each task:
-   1. Call the Linear MCP issue-create tool with `team` = `linear.teamId`, `title`, `description` (= the task body), and `state` = `linear.stateMap[<bucket>][0]`.
+   1. Call the Linear MCP issue-create tool with `team` = `linear.teamId`, `title`, `description` (= the task body; if a committed `.plan/<id>.md` exists for this task — keyed by the numeric id, e.g. `.plan/6.md` for `TASK_006` — append its content as a `<!-- atelier:plan:start -->` … `<!-- atelier:plan:end -->` delimited section), and `state` = `linear.stateMap[<bucket>][0]`.
    2. Capture the assigned Linear id (e.g. `ENG-123`).
    3. **Write the id back** to the local task file's YAML frontmatter as `backend: linear` + `backendId: <linear-id>`:
       - **Indexed source**: update the existing `roadmap/TASK_NNN_*.md` in place.
@@ -128,7 +128,7 @@ Run this only at the **root of the target repository**.
 
 4. **Push each task to the GitHub Project** one by one, in bucket order (`history` first, then `in_progress`, then `roadmap`). For each task:
    1. Resolve the project's field metadata (field id + option ids for the Status single-select) via the GitHub MCP `projects_get` role — do this once before the loop, not per item.
-   2. Create a draft item via the GitHub MCP `projects_write` role (title + body).
+   2. Create a draft item via the GitHub MCP `projects_write` role (title + body; if a committed `.plan/<id>.md` exists for this task — keyed by the numeric id, e.g. `.plan/6.md` for `TASK_006` — append its content to the body as a `<!-- atelier:plan:start -->` … `<!-- atelier:plan:end -->` delimited section before creating the item).
    3. Set Status to `githubProject.stateMap[<bucket>][0]` using the resolved option id.
    4. Capture the assigned item node id (`PVTI_...`).
    5. **Write the id back** to the local task file's YAML frontmatter as `backend: github-project` + `backendId: <PVTI_...>`:
@@ -164,10 +164,11 @@ Reconstructs the local indexed-`files` layout from the active remote backend (`l
    - List every task, grouped by destination: `HISTORY.md` entries, `IN_PROGRESS.md` link(s), and the `roadmap/TASK_NNN_<slug>.md` files to be created with their proposed filenames.
    - State **explicitly** that `.roadmap.json` will be **removed** as part of this migration.
    - Note explicitly that `backend`/`backendId` frontmatter will be **stripped** from every written task file (see step 5d.4).
+   - Note explicitly that any `atelier:plan` section will be extracted from each task body and materialized as `.plan/<id>.md` (numeric id) rather than appearing inside `roadmap/TASK_NNN_<slug>.md`.
    - Confirm or abort here. Zero side effects until the user confirms — no files written, no remote state mutated.
 
 4. **Reconstruct the indexed `files` layout atomically** (write all task files and index files as a single change set after the user confirms):
-   - **Per task → `roadmap/TASK_NNN_<slug>.md`**: write the task body and any frontmatter fields (`type`, `estimate`). **Strip `backend` and `backendId` from the written frontmatter.** The strip is the authority-flip: these fields name the remote as the canonical source; once written to local files without them, local files become the canonical source, and there is no pointer back to the remote.
+   - **Per task → `roadmap/TASK_NNN_<slug>.md`**: write the task body and any frontmatter fields (`type`, `estimate`). **Strip `backend` and `backendId` from the written frontmatter** (the authority-flip). **Strip the `atelier:plan` delimited section from the body** — extract the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` pair (if present) and write it to `.plan/<id>.md` (numeric id, e.g. `.plan/6.md`) instead. The body written to `roadmap/TASK_NNN_<slug>.md` must not contain the delimiter markers.
    - **`ROADMAP.md`** — rebuild as a §5 index: map each remote item's Status → priority section via the active backend's `stateMap` **reverse-lookup** (e.g. a Linear issue in state `Backlog` → `linear.stateMap.roadmap` match → `## Backlog` or `## Medium Priority` section, as appropriate); add `[ready]` marker to the index line if the item's `Ready` field/label is set; add `blocked_by:` metadata if the item's `blocked_by` field is non-empty.
    - **`IN_PROGRESS.md`** — write one index link line per `in_progress` bucket task.
    - **`HISTORY.md`** — write entries grouped `## YYYY-MM`, newest first, matching the [`appendHistoryEntry` entry shape](../skills/roadmap-tracking-flow/SKILL.md#appendhistoryentryid-prmetadata--logging-completed-work).
@@ -177,7 +178,7 @@ Reconstructs the local indexed-`files` layout from the active remote backend (`l
 6. **Partial-failure guard.**
    - On any `listTasks` / `getTask` failure in step 5d.2, or any file-write failure in step 5d.4: **stop immediately**. Write nothing destructive. Leave `.roadmap.json` in place. **Never touch or mutate the remote source** (this direction is read-only against the remote). Report per-bucket success/failure with the underlying error.
    - The reverse path being read-only against the remote is an inherent safety advantage over the forward 5b/5c paths, which create remote items. If the reconstruction fails partway, the user can simply re-run — the remote source is unmodified.
-   - **Lossiness note**: reconstruction is lossless for the §5 task model (title, body, bucket, `type`, `estimate`, `Ready`, `blocked_by`). Remote-only metadata — backend-native ids (`ENG-123`, `PVTI_...`), assignees, and comment threads — is inherently dropped. Document this in the report.
+   - **Lossiness note**: reconstruction is lossless for the §5 task model (title, body, bucket, `type`, `estimate`, `Ready`, `blocked_by`, plan). Remote-only metadata — backend-native ids (`ENG-123`, `PVTI_...`), assignees, and comment threads — is inherently dropped. Document this in the report.
 
 7. Continue to step 6 (report).
 
@@ -193,6 +194,7 @@ The following describes what survives and what is lost when authority is flipped
 - `[ready]` marker (via the Project's Ready field).
 - `blocked_by` (via the Project's `blocked_by` text field).
 - History entries (reconstructed from the Project's `history` bucket items).
+- The plan (`.plan/<id>.md` content folded into the item body as an `atelier:plan` delimited section on the forward leg; extracted back out to `.plan/<id>.md` on the reverse leg).
 
 **Inherently lossy (no `files` representation — dropped on the authority flip, per the approved §5-scoped lossiness decision):**
 - The `PVTI_...` Project item node id — dropped when `backendId` is stripped; this is the backend-native id for the `github-project` backend.
@@ -213,6 +215,7 @@ The following describes what survives and what is lost when authority is flipped
 - `[ready]` marker (via the `Ready` **label** — LinearBackend models readiness as a label, not a field).
 - `blocked_by` (via the Linear `blocked_by` field).
 - History entries (reconstructed from the `history` bucket items).
+- The plan (`.plan/<id>.md` content folded into the issue description as an `atelier:plan` delimited section on the forward leg; extracted back out to `.plan/<id>.md` on the reverse leg).
 
 **Inherently lossy (no `files` representation — dropped on the authority flip, per the approved §5-scoped lossiness decision):**
 - The `ENG-123`-style Linear issue id — dropped when `backendId` is stripped; this is the backend-native id for the `linear` backend.
