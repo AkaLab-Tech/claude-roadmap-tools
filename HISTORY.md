@@ -8,6 +8,23 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-07
 
+### TASK_007 — Offline mirror is local-only, not `.gitignore`-tracked — 2026-07-09
+**PR:** [#33](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/33)
+
+Fixes a gap left by TASK_006 (backend-resident plans): the offline-mirror **write** side for `LinearBackend`/`GitHubProjectBackend` (`addTask`, `moveTask`, `appendHistoryEntry`, `setReady`, `setPlan`) never got a local-only treatment. `/create-roadmap` and `/migrate-roadmap` wired the mirror paths into the committed `.gitignore` instead of `.git/info/exclude`, and `.plan/<id>.md` was missing from both lists entirely — so a resident-plan repo kept committing `.plan/<id>.md` on every `setPlan` call, riding real PRs for a file nothing on origin reads. Reported by the operator ("me crea PRs para tareas nuevas... lo mismo cuando planifica tareas") and confirmed live in `AkaLab-Tech/atelier-dev` (PRs #314, #315 committed 8 `.plan/*.md` files each, the day before this fix).
+
+**Delivered:**
+- `skills/roadmap-tracking-flow/SKILL.md` — new "Offline mirror writes are local-only" section (shared invariant for both remote backends), cross-referenced from every offline-mirror write note and from "Things this skill does NOT do".
+- `docs/RoadmapBackend.md` — `setPlan` per-backend notes and the two "offline mirror" bullets updated: five local paths (was four, `.plan/` added), local-only via `.git/info/exclude`.
+- `commands/create-roadmap.md` — steps 5b.6/5c.6 write `.git/info/exclude` (five lines) instead of the committed `.gitignore`.
+- `commands/migrate-roadmap.md` — steps 5b.7/5c.7 same mechanism; the `mirror: true` branch now also `git rm --cached`s any of the five paths already tracked from before this fix (one-time untracking, surfaced in the report).
+- `.claude-plugin/plugin.json` bumped to **`0.8.1`** (patch — bugfix, no new operations).
+
+**Tests:** prose/JSON coherence — no test runner (pure-prose plugin). `plugin.json` valid JSON at 0.8.1 (`python3 json.tool` exit 0). Grepped the repo for stray `.gitignore` mentions tied to the offline mirror — none left.
+
+**Follow-ups:**
+- Companion fix in `AkaLab-Tech/atelier` ([#320](https://github.com/AkaLab-Tech/atelier/pull/320)) untracks the 42 `.plan/*.md` already committed in `atelier-dev` before this fix existed, and needs `.git/info/exclude` updated locally in that checkout (this PR fixes the tool going forward; existing checkouts still need the one-time exclude-file edit since it's never committed).
+
 ### TASK_006 — RoadmapBackend.setPlan/getPlan (backend-resident plans) — 2026-07-01
 **PR:** [#31](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/31)
 

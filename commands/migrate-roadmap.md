@@ -113,8 +113,8 @@ Run this only at the **root of the target repository**.
    `.roadmap.json` presence is the **atomic checkpoint** of a successful migration — its existence at this path means every task is in Linear.
 
 7. **Branch on `offlineMirror`.**
-   - **`true`** (mirror on): keep all the local files (they are now the active mirror). The single-file → indexed flip is already done; the indexed task files are written with the `backendId` frontmatter. **If `.gitignore` exists at the repo root**, append `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/` to it (idempotent — do not duplicate entries). If `.gitignore` does not exist, do nothing — the user may be working without git.
-   - **`false`** (mirror off): delete the four local artefacts (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/` recursive). This deletion was previewed in step 5b.3's migration plan and confirmed there — do not re-prompt. Do not modify `.gitignore`.
+   - **`true`** (mirror on): keep all the local files (they are now the active mirror). The single-file → indexed flip is already done; the indexed task files are written with the `backendId` frontmatter. **If the repo root is inside a git working tree**, append `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/` to `.git/info/exclude` (idempotent — do not duplicate entries; create the file if absent). **Never use the committed `.gitignore`** — these are local-only mirror artefacts, not repo content, and must never be tracked or ride a PR. **If any of `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` / `roadmap/*` / `.plan/*` are already git-tracked from before this migration**, run `git rm --cached` on them (files stay on disk) so the new exclude entries actually take effect — surface this as a tracking change in the report (step 8) since it needs a commit.
+   - **`false`** (mirror off): delete the four local artefacts (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/` recursive). This deletion was previewed in step 5b.3's migration plan and confirmed there — do not re-prompt. Do not modify `.gitignore` or `.git/info/exclude`.
 
 8. Continue to step 6 (report).
 
@@ -141,7 +141,7 @@ Run this only at the **root of the target repository**.
 
 6. **All pushes succeeded.** Write `.roadmap.json` at the repo root using the **github-project template** documented in [`/create-roadmap`](create-roadmap.md#roadmapjson--github-project-backend) — reused verbatim (one source of truth). `.roadmap.json` presence is the **atomic checkpoint** of a successful migration.
 
-7. **Branch on `offlineMirror`** — identical to step 5b.7: mirror true → keep local files + idempotent `.gitignore` append; mirror false → delete the four local artefacts (previewed in the plan, no re-prompt).
+7. **Branch on `offlineMirror`** — identical to step 5b.7: mirror true → keep local files + idempotent `.git/info/exclude` append (+ `git rm --cached` any of them that are already tracked) → mirror false → delete the four local artefacts (previewed in the plan, no re-prompt).
 
 8. Continue to step 6 (report).
 
@@ -246,13 +246,13 @@ Manual validation procedure (no automated test runner; live Linear requires OAut
 - For `files → linear`:
   - List every Linear id created, grouped by bucket (`history` / `in_progress` / `roadmap`). Cite the Linear team + project so the user can navigate.
   - Note `.roadmap.json` was written.
-  - **`mirror: true`** report: local files kept as mirror; `.gitignore` lines appended (or note "all four entries already present").
+  - **`mirror: true`** report: local files kept as mirror; `.git/info/exclude` lines appended (or note "all five entries already present"); any `git rm --cached` untracking done, flagged as needing a commit.
   - **`mirror: false`** report: local files deleted: `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/` (recursive).
   - Remind the user that the next Linear MCP call may trigger an OAuth browser prompt if it has not already been authorized.
 - For `files → github-project`:
   - List every item node id (`PVTI_...`) created, grouped by bucket. Cite the GitHub Project owner + number so the user can navigate to it.
   - Note `.roadmap.json` was written.
-  - **`mirror: true`** report: local files kept as mirror; `.gitignore` lines appended (or note "all four entries already present").
+  - **`mirror: true`** report: local files kept as mirror; `.git/info/exclude` lines appended (or note "all five entries already present"); any `git rm --cached` untracking done, flagged as needing a commit.
   - **`mirror: false`** report: local files deleted: `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/` (recursive).
 - For `<remote backend> → files (indexed)`:
   - List every `roadmap/TASK_NNN_<slug>.md` created, plus the rebuilt index files (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`).
