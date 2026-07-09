@@ -64,6 +64,18 @@ On every skill activation, run the detection in this order **before** answering 
 
 Once the backend (and, for files, the layout) is decided, the rest of this skill — [the flow](#the-flow), [the pre-merge tracking rule](#pre-merge-tracking-rule-load-bearing), the chosen Operations section, and the format conventions — applies as documented. The detection above is the routing layer; everything else is the per-backend implementation.
 
+## Offline mirror writes are local-only (`LinearBackend` / `GitHubProjectBackend`)
+
+For a remote backend (`linear` or `github-project`), the remote issue/item **is** the source of truth — for the task itself **and** for its plan (`setPlan`/`getPlan`, fenced by the `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` delimiters in the issue/item body). With `offlineMirror: true`, every write operation below (`addTask`, `moveTask`, `appendHistoryEntry`, `setReady`, `setPlan`) *also* writes a local file — `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/TASK_NNN_*.md`, or `.plan/<id>.md` — as a read convenience. **None of these local writes may ever be committed, tracked in git, or ride a PR.** They exist only so the operator (and other tools) can read the current state without a network call; the remote call is what actually persists anything.
+
+Enforcement, set up once by `/create-roadmap` or `/migrate-roadmap` and never via the committed `.gitignore`:
+
+- All five local-mirror paths — `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/` — go in **`.git/info/exclude`** (local to the checkout, itself never committed), not `.gitignore`. `.gitignore` is repo content that ships to every clone; these paths are not repo content.
+- If any of them are already git-tracked (e.g. a repo that adopted a remote backend after already committing `.plan/<id>.md` under a `files` backend, or before this convention existed), `git rm --cached` them once (files stay on disk) so the exclude entries take effect, then let that removal ride its own PR — this is a one-time untracking, not an ongoing pattern.
+- A session that finds itself about to `git add` / commit / open a PR for any of these five paths on a remote-backend repo has hit this bug, not a legitimate tracking update — stop and fix the exclude setup instead of committing.
+
+This invariant is why the "[Pre-merge tracking rule](#pre-merge-tracking-rule-load-bearing)" and "Tracking updates ride on the same PR branch" (see [Things this skill does NOT do](#things-this-skill-does-not-do)) apply to the `FilesBackend` only — for `linear`/`github-project` there is no tracking file to bundle onto the work's PR; the state change already landed via the MCP call.
+
 ## The flow
 
 ```
@@ -332,7 +344,7 @@ When the user asks to add a new task:
    - `priority`: from the task input (or `0` / No priority if absent).
 3. **Capture the assigned Linear id** (e.g. `ENG-123`) and return it.
 
-When `offlineMirror: true`, the same operation **also** writes a new `roadmap/TASK_NNN_<slug>.md` locally with frontmatter `backend: linear` + `backendId: <Linear id>`, plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the Linear id.
+When `offlineMirror: true`, the same operation **also** writes a new `roadmap/TASK_NNN_<slug>.md` locally with frontmatter `backend: linear` + `backendId: <Linear id>`, plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the Linear id. Local-only — see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend); never commit these writes.
 
 **Side effects** — task exists on Linear in `linear.stateMap.roadmap[0]` (typically `Backlog`).
 
@@ -346,7 +358,7 @@ When `offlineMirror: true`, the same operation **also** writes a new `roadmap/TA
 2. **Resolve target state.** Use the **first** element of `linear.stateMap[toBucket]`.
 3. **Call the Linear MCP issue-update tool** to set `state` to the resolved target. Linear's state-change is atomic per call — that satisfies the contract's atomicity requirement.
 
-When `offlineMirror: true`, the same operation **also** rewrites the corresponding link entries in the local `ROADMAP.md` ↔ `IN_PROGRESS.md` (mirroring the `FilesBackend` behaviour). Both the local file edits and the Linear API call must succeed together; if the Linear call fails, no local files are touched. The local `roadmap/TASK_NNN_*.md` is **not** moved or renamed (indexed-layout rule).
+When `offlineMirror: true`, the same operation **also** rewrites the corresponding link entries in the local `ROADMAP.md` ↔ `IN_PROGRESS.md` (mirroring the `FilesBackend` behaviour). Both the local file edits and the Linear API call must succeed together; if the Linear call fails, no local files are touched. The local `roadmap/TASK_NNN_*.md` is **not** moved or renamed (indexed-layout rule). Local-only — never commit these writes.
 
 **Errors** — `task-not-in-from-bucket`, `move-into-history-forbidden` (when `toBucket == "history"`), `backend-unavailable`.
 
@@ -380,7 +392,7 @@ The **load-bearing atomic operation** that enforces the [pre-merge tracking rule
 
 This caveat is documented in [`docs/RoadmapBackend.md` — Atomicity and rollback](../../docs/RoadmapBackend.md).
 
-When `offlineMirror: true`, the same operation **also** removes the link entry from local `IN_PROGRESS.md` and appends an entry to local `HISTORY.md` mirroring the comment content (entry shape: same as `FilesBackend.appendHistoryEntry` — `### <Title> — YYYY-MM-DD` / `**PR:** [#N](url)` / `**Delivered:** …` / `**Tests:** …` / `**Follow-ups:** …`). Local edits bundle with the Linear calls in the same logical transaction.
+When `offlineMirror: true`, the same operation **also** removes the link entry from local `IN_PROGRESS.md` and appends an entry to local `HISTORY.md` mirroring the comment content (entry shape: same as `FilesBackend.appendHistoryEntry` — `### <Title> — YYYY-MM-DD` / `**PR:** [#N](url)` / `**Delivered:** …` / `**Tests:** …` / `**Follow-ups:** …`). Local edits bundle with the Linear calls in the same logical transaction. Local-only — never commit these writes.
 
 **Errors** — `task-not-in-progress`, missing required `prMetadata` fields, `backend-unavailable`.
 
@@ -393,7 +405,7 @@ Readiness is represented as a dedicated **`Ready` label** on the Linear issue. T
 
 Both calls are idempotent — adding an already-present label or removing an already-absent label is a no-op success at the Linear API level.
 
-When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.md` entry (bundle with the Linear call), parallel to how the other write ops mirror.
+When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.md` entry (bundle with the Linear call), parallel to how the other write ops mirror. Local-only — never commit this write.
 
 **Errors** — `task-not-found`, `backend-unavailable`.
 
@@ -401,7 +413,7 @@ When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.m
 
 The plan lives in the issue description, fenced by `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` delimiters. See [`docs/RoadmapBackend.md` — `setPlan`](../../docs/RoadmapBackend.md) for the canonical delimiter semantics (missing → empty, duplicate → first wins).
 
-- **`setPlan(id, markdown)`** — fetch the current description via issue-fetch; rewrite the content of the first delimiter pair (or append a fresh delimited section if absent); call issue-update. When `offlineMirror: true`, also write `.plan/<id>.md` locally (bundled with the Linear call), parallel to how `setReady` mirrors the `[ready]` token.
+- **`setPlan(id, markdown)`** — fetch the current description via issue-fetch; rewrite the content of the first delimiter pair (or append a fresh delimited section if absent); call issue-update. When `offlineMirror: true`, also write `.plan/<id>.md` locally (bundled with the Linear call), parallel to how `setReady` mirrors the `[ready]` token. Local-only, same as every other offline-mirror write — never commit `.plan/<id>.md` for this backend.
 - **`getPlan(id)`** — fetch the issue description via issue-fetch and extract the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` pair. No markers → returns empty.
 
 **Errors** — `task-not-found`, `backend-unavailable`.
@@ -471,7 +483,7 @@ Return:
 3. **Set custom fields**: `type` and `estimate` if provided; `Ready` unset (not ready by default); `blocked_by` as a plain text value if provided.
 4. **Capture the assigned item node id** (`PVTI_...`) returned by GitHub and return it.
 
-When `offlineMirror: true`, the same operation **also** writes a new local `roadmap/TASK_NNN_<slug>.md` with YAML frontmatter `backend: github-project` + `backendId: <PVTI_...>` (the item node id returned by GitHub), plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the GitHub item id. Bundle the local file write with the item-create calls as one logical transaction.
+When `offlineMirror: true`, the same operation **also** writes a new local `roadmap/TASK_NNN_<slug>.md` with YAML frontmatter `backend: github-project` + `backendId: <PVTI_...>` (the item node id returned by GitHub), plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the GitHub item id. Bundle the local file write with the item-create calls as one logical transaction. Local-only — see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend); never commit these writes.
 
 **Side effects** — task exists in the Project in `githubProject.stateMap.roadmap[0]` (typically `Backlog`).
 
@@ -485,7 +497,7 @@ When `offlineMirror: true`, the same operation **also** writes a new local `road
 2. **Resolve target Status.** Use the **first** element of `githubProject.stateMap[toBucket]`; resolve its option id from the project's field metadata.
 3. **Update the item's Status field** via item-field-update. A single Status field-update mutation is atomic — that satisfies the contract's atomicity requirement.
 
-When `offlineMirror: true`, the same operation **also** rewrites the corresponding link entries in the local `ROADMAP.md` ↔ `IN_PROGRESS.md` (mirroring the `FilesBackend` behaviour). The local `roadmap/TASK_NNN_*.md` is **not** moved or renamed (indexed-layout rule). Both the local file edits and the GitHub Status-field update must succeed together — if the GitHub call fails, no local files are touched.
+When `offlineMirror: true`, the same operation **also** rewrites the corresponding link entries in the local `ROADMAP.md` ↔ `IN_PROGRESS.md` (mirroring the `FilesBackend` behaviour). The local `roadmap/TASK_NNN_*.md` is **not** moved or renamed (indexed-layout rule). Both the local file edits and the GitHub Status-field update must succeed together — if the GitHub call fails, no local files are touched. Local-only — never commit these writes.
 
 **Errors** — `task-not-in-from-bucket`, `move-into-history-forbidden` (when `toBucket == "history"`), `backend-unavailable`.
 
@@ -519,7 +531,7 @@ The **load-bearing atomic operation** that enforces the [pre-merge tracking rule
 
 This caveat is documented in [`docs/RoadmapBackend.md` — Atomicity and rollback](../../docs/RoadmapBackend.md).
 
-When `offlineMirror: true`, the same operation **also** removes the `IN_PROGRESS.md` link entry and appends the standard `HISTORY.md` entry (entry shape identical to `FilesBackend.appendHistoryEntry` — `### <Title> — YYYY-MM-DD` / `**PR:** [#N](url)` / `**Delivered:** …` / `**Tests:** …` / `**Follow-ups:** …`), bundled with the GitHub item-field-update + comment/note-create calls as one logical transaction.
+When `offlineMirror: true`, the same operation **also** removes the `IN_PROGRESS.md` link entry and appends the standard `HISTORY.md` entry (entry shape identical to `FilesBackend.appendHistoryEntry` — `### <Title> — YYYY-MM-DD` / `**PR:** [#N](url)` / `**Delivered:** …` / `**Tests:** …` / `**Follow-ups:** …`), bundled with the GitHub item-field-update + comment/note-create calls as one logical transaction. Local-only — never commit these writes.
 
 **Errors** — `task-not-in-progress`, missing required `prMetadata` fields, `backend-unavailable`.
 
@@ -530,7 +542,7 @@ Set or clear the dedicated **`Ready`** Project field on the item via the **item-
 1. **Resolve the field id and option id** from the project's field metadata via the project-detail operation (same field/option-id-resolution pattern as Status, documented in the preamble above). The `Ready` field is a boolean or single-select field; locate its id before writing.
 2. `setReady(id,true)` sets the Ready field to its "ready" value. `setReady(id,false)` clears it (sets to the "not ready" value or unsets the field). A single item-field-update mutation — atomic.
 
-When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.md` entry (bundle with the GitHub call), parallel to how the other write ops mirror.
+When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.md` entry (bundle with the GitHub call), parallel to how the other write ops mirror. Local-only — never commit this write.
 
 **Errors** — `task-not-found`, `backend-unavailable`.
 
@@ -538,7 +550,7 @@ When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.m
 
 The plan lives in the item's draft-issue or linked-issue body, fenced by `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` delimiters. See [`docs/RoadmapBackend.md` — `setPlan`](../../docs/RoadmapBackend.md) for the canonical delimiter semantics (missing → empty, duplicate → first wins).
 
-- **`setPlan(id, markdown)`** — fetch the current body via item-fetch; rewrite the content of the first delimiter pair (or append a fresh delimited section if absent); call item-write (body update). When `offlineMirror: true`, also write `.plan/<id>.md` locally (bundled with the GitHub call), parallel to the `setReady` offline-mirror pattern.
+- **`setPlan(id, markdown)`** — fetch the current body via item-fetch; rewrite the content of the first delimiter pair (or append a fresh delimited section if absent); call item-write (body update). When `offlineMirror: true`, also write `.plan/<id>.md` locally (bundled with the GitHub call), parallel to the `setReady` offline-mirror pattern. Local-only, same as every other offline-mirror write — never commit `.plan/<id>.md` for this backend.
 - **`getPlan(id)`** — fetch the item body via item-fetch and extract the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` pair. No markers → returns empty.
 
 **Errors** — `task-not-found`, `backend-unavailable`.
@@ -651,7 +663,7 @@ Items older than the window remain accessible via `getTask(id)` on-demand — `g
 
 - **Local task file bodies that were modified by the refresh's own previous run**: this is fine, the next refresh will overwrite them again. The contract is read-only mirror; user-edited content is not preserved (decision 7).
 - **`.roadmap.json`**: never modified by the refresh. The config is the user's choice, not Linear's.
-- **`.gitignore`**: never modified by the refresh. `.gitignore` is touched only at `/create-roadmap` / `/migrate-roadmap` time.
+- **`.git/info/exclude`**: never modified by the refresh. It is written only at `/create-roadmap` / `/migrate-roadmap` time (never the committed `.gitignore` — see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend)).
 
 ## Format conventions
 
@@ -674,7 +686,7 @@ If the user asks to set up tracking on a repo that does not have these files yet
 ## Things this skill does NOT do
 
 - Does not edit `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` without the user's request.
-- Does not push tracking commits to a protected branch directly. Tracking updates ride on the same PR branch as the work they describe.
+- Does not push tracking commits to a protected branch directly. For `FilesBackend`, tracking updates ride on the same PR branch as the work they describe. For `LinearBackend`/`GitHubProjectBackend`, tracking IS the remote MCP call — the local offline-mirror files are read-only convenience copies and are never committed at all (see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend)).
 - Does not assume one layout — always detects first.
 - Does not invent PR numbers. If the PR is not yet open, log the entry with a placeholder and ask the user to confirm the number once it exists, **before** the PR is merged.
 - Does not invent the tracking flow on repos that do not use it. When predicate 3 fires alone (the user mentions the flow on a repo without the three tracking files and without `.roadmap.json`), the answer is to point at `/create-roadmap` and stop — **not** to extract priorities from a substitute markdown file in the repo. See [When this skill applies](#when-this-skill-applies) above for the full rule.

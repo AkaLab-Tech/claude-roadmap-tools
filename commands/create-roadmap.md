@@ -1,5 +1,5 @@
 ---
-description: Initialize task tracking at the current repo root. Pick a backend (files-based markdown layout, Linear via MCP, or GitHub Projects v2 via the GitHub MCP) and write its setup (tracking files, .roadmap.json, MCP registration, .gitignore entries).
+description: Initialize task tracking at the current repo root. Pick a backend (files-based markdown layout, Linear via MCP, or GitHub Projects v2 via the GitHub MCP) and write its setup (tracking files, .roadmap.json, MCP registration, local-only .git/info/exclude entries for remote backends).
 ---
 
 # /create-roadmap
@@ -53,14 +53,15 @@ Run this only at the **root of the target repository**. Do not create the files 
    6. **If `offlineMirror: true`:**
       - Create the three tracking files (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`) using the indexed-layout templates (the mirror always uses indexed layout — each Linear issue maps 1:1 to a `roadmap/TASK_NNN_*.md` file).
       - Create an empty `roadmap/` directory (the next time the skill activates it will be populated from Linear).
-      - **If `.gitignore` exists at the repo root**, append these four lines to it, **each only if not already present** (so re-runs are idempotent — do not duplicate entries):
+      - **If the repo root is inside a git working tree**, append these five lines to `.git/info/exclude` (create the file with the standard git-generated header comment if it does not exist yet — `.git/` always exists once `git rev-parse --is-inside-work-tree` succeeds), **each only if not already present** (so re-runs are idempotent — do not duplicate entries):
         ```
         ROADMAP.md
         IN_PROGRESS.md
         HISTORY.md
         roadmap/
+        .plan/
         ```
-        **If `.gitignore` does not exist**, do nothing — the user may be working without git, which is a valid setup. Do not auto-create `.gitignore` or `.git`.
+        **Never use the committed `.gitignore` for this** — the offline mirror (including `.plan/<id>.md` written by `setPlan`) is a local-only convenience derived from Linear's state; it must never be tracked, committed, or ride a PR. `.git/info/exclude` keeps that local-only-ness out of the repo's own history, unlike `.gitignore`. **If the repo root is not inside a git working tree**, do nothing — the user may be working without git, which is a valid setup.
    7. Continue to step 6.
 
 5c. **`github-project` backend setup:**
@@ -76,14 +77,14 @@ Run this only at the **root of the target repository**. Do not create the files 
    3. **Show the Projects** (owner + project number + title, e.g. `acme/7 — Sprint Board`) and ask the user to pick one. Capture `owner` and `projectNumber` (or the Project node id as `projectId` — acceptable alternative). Unless `$ARGUMENTS` includes `--project <owner/number-or-id>`, in which case validate the supplied value against the MCP project list instead.
    4. **Ask whether to enable the offline mirror** (unless `$ARGUMENTS` includes `--mirror` / `--no-mirror`) — same semantics as step 5b.4.
    5. **Write `.roadmap.json`** at the repo root using the [`.roadmap.json` template](#roadmapjson--github-project-backend) below. Fill `githubProject.owner` and `githubProject.projectNumber` from step 5c.3. **Ship the full `githubProject.stateMap` defaults exactly as in the template.** Same field-naming convention as linear: bucket `in_progress` ↔ `githubProject.stateMap.inProgress`.
-   6. **If `offlineMirror: true`** — identical to step 5b.6: create `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md` (indexed layout), an empty `roadmap/` directory, and append the four `.gitignore` lines idempotently (if `.gitignore` exists). If `.gitignore` does not exist, do nothing.
+   6. **If `offlineMirror: true`** — identical to step 5b.6: create `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md` (indexed layout), an empty `roadmap/` directory, and append the five `.git/info/exclude` lines idempotently (if inside a git working tree). Never use the committed `.gitignore` for this.
    7. Continue to step 6.
 
 6. **Report**, in order, every artefact created or modified during this run:
    - `.roadmap.json` (only when `backend: linear` or `backend: github-project` — flag as "created").
    - Each tracking file (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`) and the `roadmap/` directory — flag as "created" / "skipped (already existed)".
    - The MCP server registration (only if performed in step 5b.1 or 5c.1) — flag as "registered" / "skipped (already registered as <name>)".
-   - `.gitignore` modifications (only if performed in step 5b.6 or 5c.6) — list each line added, or note "all four entries already present".
+   - `.git/info/exclude` modifications (only if performed in step 5b.6 or 5c.6) — list each line added, or note "all five entries already present".
 
 7. **Remind the user** that the `roadmap-tracking-flow` skill auto-activates on this repo because the tracking files are now in place. Specifically:
    - For `backend: files`: the skill follows [Operations (`FilesBackend`)](../skills/roadmap-tracking-flow/SKILL.md) — see the section in `SKILL.md`.
