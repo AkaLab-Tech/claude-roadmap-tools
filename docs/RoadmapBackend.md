@@ -2,13 +2,14 @@
 
 The `RoadmapBackend` is the abstract contract every storage backend in `claude-roadmap-tools` implements. The `roadmap-tracking-flow` skill, `/create-roadmap`, and `/migrate-roadmap` all operate against this contract — they do not call file or Linear APIs directly.
 
-v1 ships three backends:
+v1 ships four backends:
 
 - **`FilesBackend`** — markdown files at the repo root, today's behaviour, default.
 - **`LinearBackend`** — Linear issues, via the Linear MCP server. Selected by `.roadmap.json`.
 - **`GitHubProjectBackend`** — GitHub Projects v2 items, via the hosted GitHub MCP server. Selected by `.roadmap.json`.
+- **`GitHubIssuesBackend`** — one GitHub Issue per roadmap task, driven via the `gh` CLI (not the GitHub MCP — that is `GitHubProjectBackend`'s surface). Selected by `.roadmap.json`.
 
-Future backends (`GitHubIssuesBackend`, `JiraBackend`, `TrelloBackend`) implement the same contract.
+Future backends (`JiraBackend`, `TrelloBackend`) implement the same contract.
 
 > ⚠️ **The plugin is 100% markdown.** This document is the contract the **skill** follows; the "implementation" of each backend is the set of instructions the skill applies when that backend is active. There is no executable code in the plugin — the function-style signatures below are a specification of inputs, outputs, and behaviour, not a reference to a runtime API.
 
@@ -25,6 +26,7 @@ Every task has a single canonical `id` per backend.
 | `FilesBackend` | `TASK_NNN` (e.g. `TASK_001`) | Sequential, zero-padded to three digits, never reused (per the indexed-layout numbering rule in `skills/roadmap-tracking-flow/SKILL.md`). |
 | `LinearBackend` | Linear issue ID (e.g. `ENG-123`) | Allocated by Linear on issue creation. |
 | `GitHubProjectBackend` | GitHub Projects v2 item node id (e.g. `PVTI_...`) | Allocated by GitHub on item creation. The local `TASK_NNN` remains the **human handle** for filenames and the index in `ROADMAP.md`, exactly parallel to `LinearBackend`'s `ENG-123` ↔ `TASK_NNN` parity. |
+| `GitHubIssuesBackend` | GitHub Issue number (e.g. `#42`) | Allocated by GitHub on issue creation (`gh issue create`). The local `TASK_NNN` remains the **human handle** for filenames and the index in `ROADMAP.md`, exactly parallel to `LinearBackend`'s `ENG-123` ↔ `TASK_NNN` and `GitHubProjectBackend`'s `PVTI_...` ↔ `TASK_NNN` parity. |
 | _Future_ | Backend-native ID | Each future backend documents its scheme in this table. |
 
 When the offline mirror is enabled (Linear backend + `.roadmap.json` has `offlineMirror: true`), each local task file's YAML frontmatter carries both:
@@ -49,17 +51,28 @@ backendId: PVTI_xxx
 
 The local `TASK_NNN` stays the **human handle** (for filenames and the index in `ROADMAP.md`); `backendId` (the Projects v2 item node id) is the **canonical identity for sync** operations against the Project.
 
+For `GitHubIssuesBackend` with an offline mirror, the same frontmatter pattern applies:
+
+```yaml
+---
+backend: github-issues
+backendId: 42
+---
+```
+
+The local `TASK_NNN` stays the **human handle** (for filenames and the index in `ROADMAP.md`); `backendId` (the GitHub Issue number, stored as a bare integer) is the **canonical identity for sync** operations against the repo's Issues.
+
 ### Buckets
 
 Three abstract buckets — backends map each one to native concepts:
 
-| Bucket | Meaning | `FilesBackend` | `LinearBackend` | `GitHubProjectBackend` |
-| :--- | :--- | :--- | :--- | :--- |
-| `roadmap` | Backlog. Tasks awaiting prioritization or start. | `ROADMAP.md` (or index entries in indexed layout). | Linear states matching `linear.stateMap.roadmap` (defaults: `Backlog`, `Todo`). | Project **Status** field values matching `githubProject.stateMap.roadmap` (defaults: `Backlog`, `Todo`). |
-| `in_progress` | Active work. Tasks moved here when work actually begins. | `IN_PROGRESS.md`. | States matching `linear.stateMap.inProgress` (default: `In Progress`). | Status values matching `githubProject.stateMap.inProgress` (default: `In Progress`). |
-| `history` | Completed work, append-only log. | `HISTORY.md`, newest first, grouped by `## YYYY-MM`. | States matching `linear.stateMap.history` (defaults: `Done`, `Cancelled`). | Status values matching `githubProject.stateMap.history` (defaults: `Done`, `Cancelled`). |
+| Bucket | Meaning | `FilesBackend` | `LinearBackend` | `GitHubProjectBackend` | `GitHubIssuesBackend` |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `roadmap` | Backlog. Tasks awaiting prioritization or start. | `ROADMAP.md` (or index entries in indexed layout). | Linear states matching `linear.stateMap.roadmap` (defaults: `Backlog`, `Todo`). | Project **Status** field values matching `githubProject.stateMap.roadmap` (defaults: `Backlog`, `Todo`). | Issues carrying the label `status:roadmap`. |
+| `in_progress` | Active work. Tasks moved here when work actually begins. | `IN_PROGRESS.md`. | States matching `linear.stateMap.inProgress` (default: `In Progress`). | Status values matching `githubProject.stateMap.inProgress` (default: `In Progress`). | Issues carrying the label `status:in-progress`. |
+| `history` | Completed work, append-only log. | `HISTORY.md`, newest first, grouped by `## YYYY-MM`. | States matching `linear.stateMap.history` (defaults: `Done`, `Cancelled`). | Status values matching `githubProject.stateMap.history` (defaults: `Done`, `Cancelled`). | Issues carrying the label `status:done` (closed on the same call). |
 
-> **⚠ Naming convention — bucket names vs JSON config keys.** Bucket names in operation arguments use snake_case (`roadmap`, `in_progress`, `history`). The matching JSON config keys in `.roadmap.json`'s `linear.stateMap` (or `githubProject.stateMap`) use camelCase (`roadmap`, `inProgress`, `history`). **The mapping is fixed**: bucket `roadmap` ↔ field `linear.stateMap.roadmap`, bucket `in_progress` ↔ field `linear.stateMap.inProgress`, bucket `history` ↔ field `linear.stateMap.history`. This mismatch is intentional: snake_case reads better as a programmatic identifier inside operations, camelCase matches JSON conventions for config. Implementations of any backend (including the LinearBackend `listTasks`, `moveTask`, etc.) **must** translate from the snake_case bucket argument to the camelCase config key when looking up state names. The skill's `## Mirror auto-refresh on activation` section in `SKILL.md` performs this translation explicitly; new backends must do the same.
+> **⚠ Naming convention — bucket names vs JSON config keys.** Bucket names in operation arguments use snake_case (`roadmap`, `in_progress`, `history`). The matching JSON config keys in `.roadmap.json`'s `linear.stateMap` (or `githubProject.stateMap`, or `githubIssues.stateMap`) use camelCase (`roadmap`, `inProgress`, `history`). **The mapping is fixed**: bucket `roadmap` ↔ field `linear.stateMap.roadmap`, bucket `in_progress` ↔ field `linear.stateMap.inProgress`, bucket `history` ↔ field `linear.stateMap.history`. This mismatch is intentional: snake_case reads better as a programmatic identifier inside operations, camelCase matches JSON conventions for config. Implementations of any backend (including the LinearBackend `listTasks`, `moveTask`, etc.) **must** translate from the snake_case bucket argument to the camelCase config key when looking up state names. The skill's `## Mirror auto-refresh on activation` section in `SKILL.md` performs this translation explicitly; new backends must do the same. **`GitHubIssuesBackend` names its bucket-mapping field `stateMap` too** (`githubIssues.stateMap`), for consistency with the other two remote backends, even though each value is a **label name** rather than a workflow-state name — same `roadmap` / `inProgress` / `history` keys, same snake_case ↔ camelCase translation rule. Defaults: `roadmap: ["status:roadmap"]`, `inProgress: ["status:in-progress"]`, `history: ["status:done"]`.
 
 ### Task representation
 
@@ -90,6 +103,7 @@ Every operation is described by:
 - **`FilesBackend`** — reads `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md`. In indexed layout, follows each index link to the matching `roadmap/TASK_NNN_*.md` to enrich `body` and `priority`.
 - **`LinearBackend`** — queries Linear issues filtered by team and the states listed in `linear.stateMap[bucket]`.
 - **`GitHubProjectBackend`** — uses the project-detail operation (Projects v2 toolset) to fetch all items, then filters by the Status field values listed in `githubProject.stateMap[bucket]`.
+- **`GitHubIssuesBackend`** — runs `gh issue list --label <label> --json number,title,body,labels` for each label listed in `githubIssues.stateMap[bucket]`, against `githubIssues.repo`.
 
 ### `getTask(id)`
 
@@ -100,6 +114,7 @@ Every operation is described by:
 - **`FilesBackend`** — reads `roadmap/TASK_NNN_*.md` when in indexed layout; otherwise extracts the task block from the bucket file in single-file layout.
 - **`LinearBackend`** — calls the Linear MCP issue-fetch tool with the issue id.
 - **`GitHubProjectBackend`** — uses the project-detail operation to fetch the item by its `PVTI_...` node id.
+- **`GitHubIssuesBackend`** — runs `gh issue view <n> --json number,title,body,labels,state` with `<n>` the canonical issue number, against `githubIssues.repo`.
 
 ### `addTask(task)`
 
@@ -110,6 +125,7 @@ Every operation is described by:
 - **`FilesBackend`** — allocates the next sequential `TASK_NNN` (highest existing + 1), writes `roadmap/TASK_NNN_<slug>.md`, and inserts the bullet under the appropriate priority section in `ROADMAP.md`. In single-file layout, writes the task block directly into `ROADMAP.md`.
 - **`LinearBackend`** — calls the Linear MCP issue-create tool with team, title, body, and an initial state from `linear.stateMap.roadmap[0]`.
 - **`GitHubProjectBackend`** — uses the item-write operation (Projects v2 toolset) to create a draft item with the given title and body, then sets the Status field to the first value in `githubProject.stateMap.roadmap`. Because setting a single-select field requires the field's `option id` (not its human label), the implementation must first retrieve the project's field definitions via the project-detail operation to resolve the option id before calling the item-write operation.
+- **`GitHubIssuesBackend`** — runs `gh issue create --title <title> --body <body> --label <first value of githubIssues.stateMap.roadmap>` (plus a `priority:*` label when `priority` is given) against `githubIssues.repo`. The issue number GitHub assigns is the new canonical `id`.
 
 ### `moveTask(id, fromBucket, toBucket)`
 
@@ -121,6 +137,7 @@ Every operation is described by:
 - **`FilesBackend`** — edits `ROADMAP.md` and `IN_PROGRESS.md` together in one change set. The `roadmap/TASK_NNN_*.md` file is **not** moved or renamed — only the index entries change.
 - **`LinearBackend`** — calls the Linear MCP issue-update tool, changing the issue's state to the first state listed in `linear.stateMap[toBucket]`.
 - **`GitHubProjectBackend`** — uses the item-write operation to update the item's Status field to the first value in `githubProject.stateMap[toBucket]`. The option id must be resolved from the project's field definitions via the project-detail operation before writing.
+- **`GitHubIssuesBackend`** — runs `gh issue edit <n> --remove-label <githubIssues.stateMap[fromBucket][0]> --add-label <githubIssues.stateMap[toBucket][0]>` in a single call so both label changes land together (satisfying atomicity).
 
 ### `appendHistoryEntry(id, prMetadata)`
 
@@ -136,6 +153,7 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **`FilesBackend`** — within one edit set: (a) removes the link line from `IN_PROGRESS.md`, (b) appends an entry to `HISTORY.md` under the current month's section (creating the section if absent), formatted per the convention in `skills/roadmap-tracking-flow/SKILL.md` (`### <Title> — YYYY-MM-DD` / `**PR:** [#N](url)` / `**Delivered:** …` / `**Tests:** …` / `**Follow-ups:** …`). The `roadmap/TASK_NNN_*.md` task file is **not** deleted — it stays as the canonical record of what was delivered.
 - **`LinearBackend`** — calls the Linear MCP issue-update tool, changing the issue's state to the first state listed in `linear.stateMap.history`. PR metadata is preserved by appending a comment to the Linear issue (or by updating the issue description — implementation choice deferred to the LinearBackend sub-task; either is contract-compliant). When the offline mirror is enabled, the local `HISTORY.md` entry is regenerated from Linear's done state on the next skill activation refresh.
 - **`GitHubProjectBackend`** — uses the item-write operation to set the item's Status field to the first value in `githubProject.stateMap.history`. PR metadata is stored by updating a text field on the item (e.g. a `PR` custom field). When the offline mirror is enabled, the local `HISTORY.md` entry is regenerated on the next skill activation refresh.
+- **`GitHubIssuesBackend`** — runs `gh issue edit <n> --remove-label <githubIssues.stateMap.inProgress[0]> --add-label <githubIssues.stateMap.history[0]>`, then `gh issue close <n> --comment <PR metadata formatted per the SKILL.md comment shape>` (close and comment in the same call). Pre-check via `gh issue view <n> --json labels` before either write. When the offline mirror is enabled, the local `HISTORY.md` entry is regenerated on the next skill activation refresh.
 
 ### `setReady(id, ready)`
 
@@ -147,6 +165,7 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **`FilesBackend`** — the marker is the literal `[ready]` token in the task's ROADMAP entry. Single-file layout: the token is placed immediately after the `- [ ]` checkbox on the task's heading line. Indexed layout: the token is placed immediately after the checkbox if the index link line carries one, or immediately after the leading `- ` bullet marker (before the link) if it does not. `setReady(id,true)` inserts `[ready]`; `setReady(id,false)` removes it. Single in-file edit; idempotent.
 - **`LinearBackend`** — readiness is a dedicated **`Ready` label** on the issue (labels are universally available without per-team custom-field setup). `setReady(id,true)` adds the `Ready` label (resolving it by name; creating it if absent, mirroring how the backend handles other label/state lookups); `setReady(id,false)` removes it. The label name is the literal string `Ready`.
 - **`GitHubProjectBackend`** — set/clear the dedicated **`Ready`** Project field (a boolean or single-select field on the Project item, as documented in the `GitHubProjectBackend` notes' `[ready]` marker bullet) via the **item-field-update** role (`projects_write`). The field id and option id are resolved from the project's field metadata via the project-detail operation first (same field/option-id-resolution pattern as Status). `setReady(id,true)` sets the Ready field; `setReady(id,false)` clears it. A single field-update mutation — atomic.
+- **`GitHubIssuesBackend`** — readiness is a dedicated **`ready`** label (lowercase, the literal string `ready`) on the issue. `setReady(id,true)` runs `gh issue edit <n> --add-label ready` (creating the label first via `gh label create ready` if it does not yet exist); `setReady(id,false)` runs `gh issue edit <n> --remove-label ready`. A single `gh issue edit` call — atomic; both add and remove are idempotent at the GitHub API level.
 
 ### `setPlan(id, markdown)`
 
@@ -159,8 +178,9 @@ The load-bearing operation that enforces the pre-merge tracking rule.
   - **Missing markers**: `getPlan` returns empty / none (not an error); `setPlan` appends a fresh delimited section.
   - **Duplicate markers** (multiple `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` pairs in the same body): first match wins. `getPlan` reads the content between the first pair; `setPlan` rewrites the content of the first pair and leaves any trailing duplicate sections untouched. This is a known-degenerate case; no auto-cleanup is performed.
 - **`FilesBackend`** — the plan lives in `.plan/<id>.md`, keyed by the **numeric task id** (e.g. `.plan/6.md` for task `TASK_006`). `setPlan` writes or overwrites this file. No delimiter markers are used — the file is the plan content verbatim.
-- **`LinearBackend`** — the plan lives in the issue description, fenced by the delimiter pair. `setPlan` fetches the current description via issue-fetch, rewrites or appends the delimited section, then calls issue-update. When `offlineMirror: true`, also writes `.plan/<id>.md` locally (bundled with the Linear call), parallel to how `setReady` mirrors the `[ready]` token — **local-only**, kept out of git via `.git/info/exclude`, never committed (see `SKILL.md` — [Offline mirror writes are local-only](../skills/roadmap-tracking-flow/SKILL.md#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend)).
+- **`LinearBackend`** — the plan lives in the issue description, fenced by the delimiter pair. `setPlan` fetches the current description via issue-fetch, rewrites or appends the delimited section, then calls issue-update. When `offlineMirror: true`, also writes `.plan/<id>.md` locally (bundled with the Linear call), parallel to how `setReady` mirrors the `[ready]` token — **local-only**, kept out of git via `.git/info/exclude`, never committed (see `SKILL.md` — [Offline mirror writes are local-only](../skills/roadmap-tracking-flow/SKILL.md#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend--githubissuesbackend)).
 - **`GitHubProjectBackend`** — the plan lives in the item's draft-issue or linked-issue body, fenced by the same delimiter pair. `setPlan` fetches the current body via item-fetch, rewrites or appends the delimited section, then calls item-write (body update). When `offlineMirror: true`, also writes `.plan/<id>.md` locally (bundled with the GitHub call), parallel to the `setReady` offline-mirror pattern — **local-only**, same treatment as `LinearBackend` above; the plan is fully resident in the item body, the local file is a read convenience that must never be tracked or committed.
+- **`GitHubIssuesBackend`** — the plan lives in the issue body, fenced by the same delimiter pair. `setPlan` runs `gh issue view <n> --json body` to fetch the current body, rewrites or appends the delimited section, then runs `gh issue edit <n> --body <new body>`. When `offlineMirror: true`, also writes `.plan/<id>.md` locally (bundled with the `gh` call), parallel to the `setReady` offline-mirror pattern — **local-only**, same treatment as `LinearBackend`/`GitHubProjectBackend` above.
 
 ### `getPlan(id)`
 
@@ -172,6 +192,7 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **`FilesBackend`** — reads `.plan/<id>.md` (numeric id, e.g. `.plan/6.md`). Missing file → returns empty (no plan; not an error).
 - **`LinearBackend`** — fetches the issue description via issue-fetch and extracts the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` marker pair. No markers → returns empty.
 - **`GitHubProjectBackend`** — fetches the item body via item-fetch and extracts the content between the first marker pair. No markers → returns empty.
+- **`GitHubIssuesBackend`** — runs `gh issue view <n> --json body` and extracts the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` marker pair. No markers → returns empty.
 
 ### `isAvailable()`
 
@@ -182,6 +203,7 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **`FilesBackend`** — always returns `true`. The filesystem is the backend.
 - **`LinearBackend`** — checks that a Linear MCP server is registered in Claude Code (matching the `mcp.linear.app` host or a known server name like `linear-server`). Returns `false` if not. Does **not** issue any Linear API call — that would trigger OAuth on first ever use.
 - **`GitHubProjectBackend`** — inspects the registered MCP server list in Claude Code for a host/name match against the hosted GitHub MCP endpoint (`api.githubcopilot.com/mcp`). Returns `false` if not found. Issues **no** API call — avoids triggering OAuth on first use, exactly mirroring the `LinearBackend` pattern.
+- **`GitHubIssuesBackend`** — checks that the `gh` CLI binary is present on `PATH` and runs `gh auth status` (a read-only auth probe, not a mutating API call). Returns `true` iff `gh` is installed **and** `gh auth status` reports an authenticated session; `false` otherwise. Does **not** call any Issues endpoint — mirrors the "no side effects, no OAuth trigger" contract of `LinearBackend`/`GitHubProjectBackend`, substituting `gh`'s local auth-state check for an MCP-registration check since this backend has no MCP surface at all.
 
 ## Error semantics
 
@@ -195,6 +217,7 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **`moveTask`** and **`appendHistoryEntry`** are atomic. Backends that touch multiple resources implement compensation if their underlying API does not provide transactions.
   - `FilesBackend`: bundles all file edits into a single change set so the user reviews and commits them as one unit. If the user rejects partway, no files are left touched.
   - `LinearBackend`: each operation maps to a single Linear API call (state change), so atomicity is provided by Linear's transactional state update. The risk is for `appendHistoryEntry` where PR metadata is appended as a comment after the state change — if the comment append fails the state is already moved; the skill should re-try the comment and surface a warning if it cannot, but **not** revert the state.
+  - `GitHubIssuesBackend`: `moveTask` bundles both label changes (`--remove-label` + `--add-label`) into a single `gh issue edit` call, so atomicity is provided by that one API call. `appendHistoryEntry` bundles the label swap and the issue close into a single `gh issue close --comment` call where possible; if the label swap must precede the close (two calls), and the close fails after the labels changed, do **not** revert the labels — retry the close once and surface a warning if it still fails, the same non-reversion policy as `LinearBackend`'s comment-append risk.
 
 ## Per-backend notes
 
@@ -238,6 +261,21 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **Offline mirror**: when `offlineMirror: true`, the skill maintains five local paths (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/`) as a one-way read-only mirror of the Project's state — local-only, never committed, kept out of git via `.git/info/exclude`. The mirror refreshes automatically every time the skill activates. Each local task file carries `backend: github-project` + `backendId: PVTI_...` frontmatter; coherence between local files and remote items is by `backendId`, not by title or slug. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation).
 - **History window for refresh**: `githubProject.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Bounds the cost of `listTasks("history")` on every skill activation. Supported values: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"` (last N entries), or `"all"` (no limit). Items outside the window remain accessible via `getTask(id)` on-demand. Same grammar as `linear.historyWindow`. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation) for the full semantics.
 
+### `GitHubIssuesBackend`
+
+- **Requires the `gh` CLI, not any MCP.** This is the one backend in the plugin with no MCP surface at all — every operation shells out to `gh`. Authentication is whatever `gh auth login` has already set up on the machine; the skill never drives an OAuth browser flow for this backend. `isAvailable()` (see above) is a `gh auth status` probe, nothing more.
+- Identity: the GitHub Issue number (e.g. `#42`), allocated by GitHub on `gh issue create`. The local `TASK_NNN` remains the human handle, parallel to `LinearBackend`'s `ENG-123` ↔ `TASK_NNN` and `GitHubProjectBackend`'s `PVTI_...` ↔ `TASK_NNN` parity.
+- **Bucket → label `stateMap`**: `githubIssues.stateMap` in `.roadmap.json`, same `roadmap` / `inProgress` / `history` keys and snake_case ↔ camelCase translation rule as `linear.stateMap` / `githubProject.stateMap` (see ⚠ note in _Buckets_ above), except each value is a **label name**, not a workflow-state name. Fixed defaults: `roadmap: ["status:roadmap"]`, `inProgress: ["status:in-progress"]`, `history: ["status:done"]`. `moveTask` and `appendHistoryEntry` swap these labels via `gh issue edit --remove-label` / `--add-label`; `appendHistoryEntry` additionally closes the issue (`gh issue close`).
+- **Priority labels**: `priority: "P0" | "P1" | "P2"` maps to the labels `priority:P0`, `priority:P1`, `priority:P2` (byte-identical strings, no separate stateMap — these are fixed, not user-configurable, since they mirror the `#5 ROADMAP.md` priority sections directly).
+- **`[ready]` marker** — modeled as a dedicated **`ready`** label (lowercase). Not a `status:*` label — keeping readiness orthogonal to bucket placement, the same design reason `GitHubProjectBackend` keeps `Ready` off the Status field. See the `setReady` per-backend note above.
+- **`blocked_by`** — GitHub Issues has no native relations/dependency field usable without extra API scopes; as a known limitation, this backend stores `blocked_by` the same way `GitHubProjectBackend` stores it on a Project item: a plain-text convention, here appended as a `**Blocked by:** TASK_003, TASK_005` line in the issue body (outside the `atelier:plan` delimited section) rather than a field. This is a documented limitation, not a contract violation — `blocked_by` round-trips through the issue body, not a structured field.
+- **Plan storage**: the plan lives in the issue body, fenced by `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` — identical delimiter strings and rewrite-in-place semantics to `LinearBackend`/`GitHubProjectBackend` (see `setPlan`/`getPlan` per-backend notes above).
+- **`isAvailable()`** — `gh` binary present on `PATH` **and** `gh auth status` reports an authenticated session. No Issues API call. See the `isAvailable()` per-backend note above.
+- **Repo selection**: `githubIssues.repo` (`"<owner>/<name>"`, e.g. `"acme/widgets"`) in `.roadmap.json` — every `gh issue` invocation passes `--repo <githubIssues.repo>` explicitly rather than relying on the invoking shell's `cwd` remote, so the backend behaves the same whether or not the current directory happens to be a clone of that repo. Mirrors `LinearBackend`'s `linear.teamId` / `GitHubProjectBackend`'s `githubProject.owner` selection pattern. `/create-roadmap` writes this during setup.
+- **Label validation before first use** — because labels are free-text and easy to fat-finger (a typo silently creates a look-alike label that no `stateMap` entry matches, quietly breaking `listTasks`), `/create-roadmap`'s `github-issues` setup step runs `gh label list --repo <githubIssues.repo>` and creates any of `status:roadmap`, `status:in-progress`, `status:done`, `ready`, `priority:P0`, `priority:P1`, `priority:P2` that are missing via `gh label create` **before** the config is considered ready. This is the mitigation for the "less-structured-than-a-Project's-custom-fields" risk noted in the task plan — labels have no schema, so the setup step is the closest available approximation to Projects v2's constrained field options.
+- **Offline mirror**: when `offlineMirror: true`, identical five-path mechanism (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/`) as `LinearBackend`/`GitHubProjectBackend` — local-only, never committed, kept out of git via `.git/info/exclude`, refreshed automatically on every skill activation. Each local task file carries `backend: github-issues` + `backendId: <issue-number>` frontmatter; coherence is by `backendId`, not title or slug. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation).
+- **History window for refresh**: `githubIssues.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Same grammar and defaults as `linear.historyWindow` / `githubProject.historyWindow`: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"`, or `"all"`. Bounds the cost of `listTasks("history")` (a `gh issue list --label status:done --state closed` call) on every skill activation.
+
 ## Reverse reconstruction (remote → files)
 
 This section documents the contract for reading the active remote backend in reverse to rebuild a local indexed-`files` layout. It is the shared read path for two consumers:
@@ -269,11 +307,11 @@ On the **written** files, `backend` and `backendId` frontmatter is deliberately 
 
 | Field (remote) | Remote representation | Files representation |
 | :--- | :--- | :--- |
-| `Ready` | Linear label `Ready`; GitHub Project `Ready` field | `[ready]` token on the `ROADMAP.md` index line |
-| `blocked_by` | Plain text field on the remote item | `blocked_by:` YAML frontmatter in the task file |
+| `Ready` | Linear label `Ready`; GitHub Project `Ready` field; GitHub Issue label `ready` | `[ready]` token on the `ROADMAP.md` index line |
+| `blocked_by` | Plain text field on the remote item; GitHub Issue: `**Blocked by:** …` line in the issue body | `blocked_by:` YAML frontmatter in the task file |
 | `type` | Custom field on the remote item | `type:` YAML frontmatter in the task file |
 | `estimate` | Custom field on the remote item | `estimate:` YAML frontmatter in the task file |
-| Status / state | `stateMap` value (e.g. `"In Progress"`) | Bucket placement (`IN_PROGRESS.md` / `ROADMAP.md` / `HISTORY.md`) via reverse `stateMap` lookup |
+| Status / state | `stateMap` value (e.g. `"In Progress"`); GitHub Issue: `status:*` label | Bucket placement (`IN_PROGRESS.md` / `ROADMAP.md` / `HISTORY.md`) via reverse `stateMap` lookup |
 | `plan` | `<!-- atelier:plan:start -->` … `<!-- atelier:plan:end -->` delimited section in the item body / issue description | `.plan/<numeric-id>.md` (e.g. `.plan/6.md`) |
 
 The `stateMap` reverse-lookup maps a remote status label to its bucket: find the bucket whose `stateMap[bucket]` list contains the item's current Status, then write the task into the corresponding local file. The same snake_case ↔ camelCase naming convention (⚠ note in _Buckets_ above) applies.
@@ -292,15 +330,33 @@ The remote source is **never mutated** during reconstruction. This read-only-aga
 
 Reconstruction is lossless for the §5 task model: title, body, bucket, `type`, `estimate`, `Ready`, `blocked_by`, and the plan all round-trip. The `atelier:plan` delimited section is **extracted out of** the item body / issue description during reconstruction (so it never bleeds into the written `roadmap/TASK_NNN_*.md` body) and materialized as `.plan/<numeric-id>.md` — lossless. Remote-only metadata is **inherently dropped** because it has no representation in the files layout:
 
-- Backend-native ids (`ENG-123`, `PVTI_...`) — stripped per the authority-flip rule above.
+- Backend-native ids (`ENG-123`, `PVTI_...`, GitHub Issue numbers) — stripped per the authority-flip rule above.
 - Assignees — no files-layout field.
 - Comment threads — no files-layout field (the equivalent is the `## Status` section in indexed task files, populated only by the user going forward).
 
 Both consumers (mirror-refresh and `/migrate-roadmap` 5d) must document this lossiness in their output.
 
+#### `github-issues → files` fidelity
+
+**Preserved (round-trips losslessly within the §5 model):**
+- Task title and body.
+- `type` and `estimate` frontmatter fields.
+- The `TASK_NNN`/`#id` human handle.
+- The bucket (via `githubIssues.stateMap` reverse-lookup on the issue's `status:*` label).
+- `[ready]` marker (via the `ready` label).
+- `blocked_by` (via the `**Blocked by:** …` convention line in the issue body).
+- History entries (reconstructed from the `history` bucket items; the issue's closed state is the GitHub-native signal, the `status:done` label is the `stateMap`-driven one this backend reads).
+- The plan (`.plan/<id>.md` content folded into the issue body as an `atelier:plan` delimited section on the forward leg; extracted back out to `.plan/<id>.md` on the reverse leg).
+
+**Inherently lossy (no `files` representation — dropped on the authority flip, per the approved §5-scoped lossiness decision):**
+- The GitHub Issue number — dropped when `backendId` is stripped; this is the backend-native id for the `github-issues` backend.
+- GitHub assignees, comment threads, and any label not covered by the `status:*` / `ready` / `priority:*` conventions.
+
+The `stateMap`-multi-value and `<slug>`-cosmetic caveats above apply equally to this direction.
+
 ### Future backends
 
-`GitHubIssuesBackend`, `JiraBackend`, `TrelloBackend` follow the same contract. Each materialised backend must document:
+`JiraBackend`, `TrelloBackend` follow the same contract. Each materialised backend must document:
 
 - Its identity scheme (this doc's _Identity_ table gains a new row).
 - Its authentication requirements.
@@ -321,3 +377,5 @@ This contract is part of the plugin's public surface. Breaking changes (renaming
 Non-breaking additions (a new optional field on a task, a new optional metadata key) do **not** require a version bump but must be documented in the relevant operation section.
 
 **v0.8.0** — additive minor bump: `setPlan(id, markdown)` and `getPlan(id)` are new public operations (non-breaking; existing callers are unaffected).
+
+**v0.9.0** — additive minor bump: `GitHubIssuesBackend` is a new backend implementing the full existing contract (non-breaking; existing `files`/`linear`/`github-project` callers are unaffected). It maps one roadmap task to one GitHub Issue via the `gh` CLI, using `status:*` / `ready` / `priority:*` labels in place of a Projects v2 Status field, and reuses the existing `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` plan delimiter and offline-mirror mechanisms verbatim.
