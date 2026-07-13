@@ -8,6 +8,20 @@ Newest first. Each entry references the PR(s) that delivered the work.
 
 ## 2026-07
 
+### TASK_003 — GitHub Issues backend — 2026-07-13
+**PR:** [#34](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/34)
+
+Adds the fourth `RoadmapBackend` implementation — `GitHubIssuesBackend`, mapping one roadmap task to one GitHub Issue via the `gh` CLI, following the contract already implemented by `LinearBackend` (TASK_004/M9.1) and `GitHubProjectBackend` (M9.2). Rounds out the multi-backend foundation opened by TASK_001 with the lightest-weight remote option (plain Issues + labels, no Projects v2 board required).
+
+**Delivered:**
+- `docs/RoadmapBackend.md` — new `GitHubIssuesBackend` Identity row, Buckets column, all 9 per-operation bullets (`listTasks`, `getTask`, `addTask`, `moveTask`, `appendHistoryEntry`, `setReady`/`getReady`, `setPlan`/`getPlan`, `isAvailable`), per-backend-notes sub-section, `github-issues → files` reverse-reconstruction fidelity table, v0.9.0 Versioning note.
+- `skills/roadmap-tracking-flow/SKILL.md` — backend routing/activation/mirror-refresh extended for `github-issues`, new `## Operations (GitHubIssuesBackend)` section.
+- `commands/create-roadmap.md` — `github-issues` backend setup step, `.roadmap.json` template, Arguments section.
+- `commands/migrate-roadmap.md` — `files → github-issues` forward leg, `github-issues → files` reverse leg (5d engine), Direction matrix.
+- `.claude-plugin/plugin.json` bumped to **`0.9.0`** (additive minor — new backend; existing `files`/`linear`/`github-project` callers unaffected).
+
+**Tests:** prose/JSON coherence — no test runner (pure-prose plugin). `plugin.json` valid JSON at v0.9.0 (`python3 -m json.tool` exit 0); 9-point coherence suite green (delimiter/label byte-consistency, cross-links, direction-matrix completeness, backend-parity regression, end-to-end spec walkthrough, isAvailable contract).
+
 ### TASK_007 — Offline mirror is local-only, not `.gitignore`-tracked — 2026-07-09
 **PR:** [#33](https://github.com/AkaLab-Tech/claude-roadmap-tools/pull/33)
 
