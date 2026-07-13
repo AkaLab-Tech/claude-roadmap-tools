@@ -1,6 +1,6 @@
 ---
 name: roadmap-tracking-flow
-description: Consult this skill whenever the current repository's root contains all three of `ROADMAP.md`, `IN_PROGRESS.md` and `HISTORY.md`, OR a `.roadmap.json` config file (any backend), OR the user explicitly mentions task tracking, the roadmap, what is in progress, history of completed work, or moving a task between those files. The skill defines the flow `ROADMAP → IN_PROGRESS → HISTORY`, the pre-merge tracking rule, how to propose the next task, and the entry format for each file. It supports three backends — `files` (markdown at the repo root, single-file or indexed layout), `linear` (Linear issues via the Linear MCP, optional offline mirror with auto-refresh on activation), and `github-project` (GitHub Projects v2 via the hosted GitHub MCP, optional offline mirror). Skip for read-only chats that do not touch tracking, for trivial edits, and once the user has declined applying it earlier in the session.
+description: Consult this skill whenever the current repository's root contains all three of `ROADMAP.md`, `IN_PROGRESS.md` and `HISTORY.md`, OR a `.roadmap.json` config file (any backend), OR the user explicitly mentions task tracking, the roadmap, what is in progress, history of completed work, or moving a task between those files. The skill defines the flow `ROADMAP → IN_PROGRESS → HISTORY`, the pre-merge tracking rule, how to propose the next task, and the entry format for each file. It supports four backends — `files` (markdown at the repo root, single-file or indexed layout), `linear` (Linear issues via the Linear MCP, optional offline mirror with auto-refresh on activation), `github-project` (GitHub Projects v2 via the hosted GitHub MCP, optional offline mirror), and `github-issues` (one GitHub Issue per task via the `gh` CLI, optional offline mirror). Skip for read-only chats that do not touch tracking, for trivial edits, and once the user has declined applying it earlier in the session.
 ---
 
 # roadmap-tracking-flow skill
@@ -11,11 +11,12 @@ Keep the user's task tracking consistent across the three top-level files (`ROAD
 
 The skill's operations follow the abstract `RoadmapBackend` contract documented in [`docs/RoadmapBackend.md`](../../docs/RoadmapBackend.md). That document is the canonical spec — operation signatures, error names, atomicity rules, and per-backend notes — and is shared with every other piece of the plugin (the slash commands and any future backend).
 
-This `SKILL.md` expresses three backends shipped with the plugin:
+This `SKILL.md` expresses four backends shipped with the plugin:
 
 - **`FilesBackend`** — applied when `.roadmap.json` is absent or declares `backend: "files"` (the default). Markdown files at the repo root, single-file or indexed layout. See [Operations (`FilesBackend`)](#operations-filesbackend) below.
 - **`LinearBackend`** — applied when `.roadmap.json` declares `backend: "linear"`. Linear issues backed by the Linear MCP server. See [Operations (`LinearBackend`)](#operations-linearbackend) below.
 - **`GitHubProjectBackend`** — applied when `.roadmap.json` declares `backend: "github-project"`. GitHub Projects v2 items backed by the hosted GitHub MCP. See [Operations (`GitHubProjectBackend`)](#operations-githubprojectbackend) below.
+- **`GitHubIssuesBackend`** — applied when `.roadmap.json` declares `backend: "github-issues"`. One GitHub Issue per task, driven via the `gh` CLI (not the GitHub MCP). See [Operations (`GitHubIssuesBackend`)](#operations-githubissuesbackend) below.
 
 Future backends (`JiraBackend`, `TrelloBackend`) extend this file in the same pattern, each adding its own `## Operations (<BackendName>)` sibling section with per-operation notes.
 
@@ -26,10 +27,10 @@ The plugin is 100% markdown — the contract is a specification the skill follow
 Activate the rules below when **any** of:
 
 1. The current repository's root contains **all three** of `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, **or**
-2. The current repository's root contains a `.roadmap.json` config file (any backend — `files`, `linear`, or `github-project`), **or**
+2. The current repository's root contains a `.roadmap.json` config file (any backend — `files`, `linear`, `github-project`, or `github-issues`), **or**
 3. The user explicitly references the flow ("move this to HISTORY", "what is in progress?", "next task from the roadmap", "log this PR").
 
-Predicate 2 covers the `backend: "linear"` or `backend: "github-project"` + `offlineMirror: false` setup where there are no local tracking files at the repo root: the `.roadmap.json` is the only on-disk evidence of the flow. Without predicate 2, the skill would silently not activate for those repos until the user explicitly invoked the flow.
+Predicate 2 covers the `backend: "linear"`, `backend: "github-project"`, or `backend: "github-issues"` + `offlineMirror: false` setup where there are no local tracking files at the repo root: the `.roadmap.json` is the only on-disk evidence of the flow. Without predicate 2, the skill would silently not activate for those repos until the user explicitly invoked the flow.
 
 Otherwise — none of the predicates match — leave the repo alone. Do not invent these files, do not invent `.roadmap.json`, and do not suggest the flow on repos that do not use it.
 
@@ -53,20 +54,21 @@ On every skill activation, run the detection in this order **before** answering 
      - `backend: "files"` → use [Operations (`FilesBackend`)](#operations-filesbackend).
      - `backend: "linear"` → use [Operations (`LinearBackend`)](#operations-linearbackend).
      - `backend: "github-project"` → use [Operations (`GitHubProjectBackend`)](#operations-githubprojectbackend).
-     The `offlineMirror` field decides whether the [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) applies — meaningful for any remote backend (`linear`, `github-project`), ignored for `files`.
+     - `backend: "github-issues"` → use [Operations (`GitHubIssuesBackend`)](#operations-githubissuesbackend).
+     The `offlineMirror` field decides whether the [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) applies — meaningful for any remote backend (`linear`, `github-project`, `github-issues`), ignored for `files`.
    - **Absent**: source backend is implicitly `files` (the default). Use [Operations (`FilesBackend`)](#operations-filesbackend).
 
 2. **For `files` backend**, detect the layout (single-file vs indexed) as documented in [Layouts: single-file vs indexed](#layouts-single-file-vs-indexed) above. The chosen layout governs how each operation reads and writes files.
 
-3. **For any remote backend (`linear` or `github-project`) with `offlineMirror: true`**, run the mirror auto-refresh (see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below) **before** answering the user's prompt. The refresh is part of activation, not a separate step the user invokes.
+3. **For any remote backend (`linear`, `github-project`, or `github-issues`) with `offlineMirror: true`**, run the mirror auto-refresh (see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below) **before** answering the user's prompt. The refresh is part of activation, not a separate step the user invokes.
 
-4. **For any remote backend (`linear` or `github-project`) with `offlineMirror: false`**, no local files exist (the repo is remote-only). All operations route through the appropriate backend and execute against the remote in real-time. No refresh step is needed because there is no mirror to refresh.
+4. **For any remote backend (`linear`, `github-project`, or `github-issues`) with `offlineMirror: false`**, no local files exist (the repo is remote-only). All operations route through the appropriate backend and execute against the remote in real-time. No refresh step is needed because there is no mirror to refresh.
 
 Once the backend (and, for files, the layout) is decided, the rest of this skill — [the flow](#the-flow), [the pre-merge tracking rule](#pre-merge-tracking-rule-load-bearing), the chosen Operations section, and the format conventions — applies as documented. The detection above is the routing layer; everything else is the per-backend implementation.
 
-## Offline mirror writes are local-only (`LinearBackend` / `GitHubProjectBackend`)
+## Offline mirror writes are local-only (`LinearBackend` / `GitHubProjectBackend` / `GitHubIssuesBackend`)
 
-For a remote backend (`linear` or `github-project`), the remote issue/item **is** the source of truth — for the task itself **and** for its plan (`setPlan`/`getPlan`, fenced by the `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` delimiters in the issue/item body). With `offlineMirror: true`, every write operation below (`addTask`, `moveTask`, `appendHistoryEntry`, `setReady`, `setPlan`) *also* writes a local file — `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/TASK_NNN_*.md`, or `.plan/<id>.md` — as a read convenience. **None of these local writes may ever be committed, tracked in git, or ride a PR.** They exist only so the operator (and other tools) can read the current state without a network call; the remote call is what actually persists anything.
+For a remote backend (`linear`, `github-project`, or `github-issues`), the remote issue/item **is** the source of truth — for the task itself **and** for its plan (`setPlan`/`getPlan`, fenced by the `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` delimiters in the issue/item body). With `offlineMirror: true`, every write operation below (`addTask`, `moveTask`, `appendHistoryEntry`, `setReady`, `setPlan`) *also* writes a local file — `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/TASK_NNN_*.md`, or `.plan/<id>.md` — as a read convenience. **None of these local writes may ever be committed, tracked in git, or ride a PR.** They exist only so the operator (and other tools) can read the current state without a network call; the remote call is what actually persists anything.
 
 Enforcement, set up once by `/create-roadmap` or `/migrate-roadmap` and never via the committed `.gitignore`:
 
@@ -74,7 +76,7 @@ Enforcement, set up once by `/create-roadmap` or `/migrate-roadmap` and never vi
 - If any of them are already git-tracked (e.g. a repo that adopted a remote backend after already committing `.plan/<id>.md` under a `files` backend, or before this convention existed), `git rm --cached` them once (files stay on disk) so the exclude entries take effect, then let that removal ride its own PR — this is a one-time untracking, not an ongoing pattern.
 - A session that finds itself about to `git add` / commit / open a PR for any of these five paths on a remote-backend repo has hit this bug, not a legitimate tracking update — stop and fix the exclude setup instead of committing.
 
-This invariant is why the "[Pre-merge tracking rule](#pre-merge-tracking-rule-load-bearing)" and "Tracking updates ride on the same PR branch" (see [Things this skill does NOT do](#things-this-skill-does-not-do)) apply to the `FilesBackend` only — for `linear`/`github-project` there is no tracking file to bundle onto the work's PR; the state change already landed via the MCP call.
+This invariant is why the "[Pre-merge tracking rule](#pre-merge-tracking-rule-load-bearing)" and "Tracking updates ride on the same PR branch" (see [Things this skill does NOT do](#things-this-skill-does-not-do)) apply to the `FilesBackend` only — for `linear`/`github-project`/`github-issues` there is no tracking file to bundle onto the work's PR; the state change already landed via the MCP call (or, for `github-issues`, the `gh` call).
 
 ## The flow
 
@@ -344,7 +346,7 @@ When the user asks to add a new task:
    - `priority`: from the task input (or `0` / No priority if absent).
 3. **Capture the assigned Linear id** (e.g. `ENG-123`) and return it.
 
-When `offlineMirror: true`, the same operation **also** writes a new `roadmap/TASK_NNN_<slug>.md` locally with frontmatter `backend: linear` + `backendId: <Linear id>`, plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the Linear id. Local-only — see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend); never commit these writes.
+When `offlineMirror: true`, the same operation **also** writes a new `roadmap/TASK_NNN_<slug>.md` locally with frontmatter `backend: linear` + `backendId: <Linear id>`, plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the Linear id. Local-only — see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend--githubissuesbackend); never commit these writes.
 
 **Side effects** — task exists on Linear in `linear.stateMap.roadmap[0]` (typically `Backlog`).
 
@@ -483,7 +485,7 @@ Return:
 3. **Set custom fields**: `type` and `estimate` if provided; `Ready` unset (not ready by default); `blocked_by` as a plain text value if provided.
 4. **Capture the assigned item node id** (`PVTI_...`) returned by GitHub and return it.
 
-When `offlineMirror: true`, the same operation **also** writes a new local `roadmap/TASK_NNN_<slug>.md` with YAML frontmatter `backend: github-project` + `backendId: <PVTI_...>` (the item node id returned by GitHub), plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the GitHub item id. Bundle the local file write with the item-create calls as one logical transaction. Local-only — see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend); never commit these writes.
+When `offlineMirror: true`, the same operation **also** writes a new local `roadmap/TASK_NNN_<slug>.md` with YAML frontmatter `backend: github-project` + `backendId: <PVTI_...>` (the item node id returned by GitHub), plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the GitHub item id. Bundle the local file write with the item-create calls as one logical transaction. Local-only — see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend--githubissuesbackend); never commit these writes.
 
 **Side effects** — task exists in the Project in `githubProject.stateMap.roadmap[0]` (typically `Backlog`).
 
@@ -569,29 +571,173 @@ Cross-reference [`docs/RoadmapBackend.md` — `GitHubProjectBackend`](../../docs
 
 When `isAvailable()` returns `false`, the skill surfaces this to the user. Operations that depend on the GitHub MCP throw `backend-unavailable` when called against an unavailable backend. For the activation-time behaviour when `isAvailable()` returns `false`, see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below — the skill falls back gracefully to the existing local snapshot rather than refusing to activate.
 
+## Operations (`GitHubIssuesBackend`)
+
+This section describes how each of the six contract operations is performed when the repo's `.roadmap.json` declares `backend: "github-issues"`. The structure mirrors [Operations (`FilesBackend`)](#operations-filesbackend), [Operations (`LinearBackend`)](#operations-linearbackend), and [Operations (`GitHubProjectBackend`)](#operations-githubprojectbackend) above; only the per-operation implementation differs. **This is the one backend that has no MCP surface at all** — every operation below shells out to the `gh` CLI, never the GitHub MCP (that is `GitHubProjectBackend`'s surface).
+
+Activation prerequisites (assumed by every operation below):
+
+- `.roadmap.json` exists at the repo root with `backend: "github-issues"`, a `githubIssues.repo` selector (`"<owner>/<name>"`), and a `githubIssues.stateMap` (defaults: `roadmap: ["status:roadmap"]`, `inProgress: ["status:in-progress"]`, `history: ["status:done"]`).
+- The `gh` CLI is installed on `PATH` and authenticated (`gh auth status` succeeds). There is no MCP registration step and no OAuth browser flow driven by the skill — authentication is whatever `gh auth login` already set up on the machine.
+- The seven labels used by this backend (`status:roadmap`, `status:in-progress`, `status:done`, `ready`, and the three `priority:P0`/`priority:P1`/`priority:P2` labels) exist on `githubIssues.repo`. `/create-roadmap`'s `github-issues` setup step creates any missing ones via `gh label create` before writing `.roadmap.json` — see [`/create-roadmap`](../../commands/create-roadmap.md).
+
+Every `gh` invocation below passes `--repo <githubIssues.repo>` explicitly rather than relying on the invoking shell's `cwd` remote.
+
+> **⚠ Naming convention for `stateMap` lookups.** Bucket arguments in operations use snake_case (`roadmap`, `in_progress`, `history`). The matching JSON keys in `githubIssues.stateMap` use camelCase (`roadmap`, `inProgress`, `history`). Every `githubIssues.stateMap[bucket]` lookup in the operations below is **implicitly translated**: bucket `in_progress` → key `inProgress`, others unchanged. When writing `.roadmap.json`, use the camelCase keys. See [`docs/RoadmapBackend.md` — Buckets](../../docs/RoadmapBackend.md) for the full convention.
+
+### `listTasks(bucket)` — propose / inspect the buckets
+
+Resolve the label(s) for the requested bucket via `githubIssues.stateMap[bucket]` in `.roadmap.json` (e.g. `["status:roadmap"]` for `"roadmap"` under the defaults; for `in_progress`, look up `githubIssues.stateMap.inProgress` per the naming convention above).
+
+Run `gh issue list --repo <githubIssues.repo> --label <label> --json number,title,body,labels` for each label in `githubIssues.stateMap[bucket]` (union the results, de-duplicating by issue number). For `history`, add `--state closed` (issues in `status:done` are also closed by `appendHistoryEntry`, see below). For each returned issue, build a task element with:
+
+- `id`: the issue number (e.g. `42`).
+- `title`: from the issue title.
+- `current_bucket`: derived by reverse-mapping the issue's `status:*` label through `githubIssues.stateMap`.
+
+When `offlineMirror: true`, this operation also refreshes the corresponding section of the local mirror as part of the [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) procedure.
+
+**Errors** — empty bucket returns an empty list (not an error). `gh` unavailable or unauthenticated → throw `backend-unavailable`.
+
+### `getTask(id)` — fetch a single task's full content
+
+Run `gh issue view <n> --repo <githubIssues.repo> --json number,title,body,labels,state` with `<n>` the canonical issue number.
+
+Return:
+
+- `id`: the issue number.
+- `title`: from the issue.
+- `body`: from the issue body (with the `atelier:plan` delimited section, if present, left in place — `getPlan` is the operation that extracts it).
+- `current_bucket`: reverse-mapped from the issue's `status:*` label through `githubIssues.stateMap`.
+- `priority`: derived from whichever `priority:P0`/`priority:P1`/`priority:P2` label is present, if any.
+- `Ready`: whether the `ready` label is present.
+- `blocked_by`: parsed from the `**Blocked by:** …` convention line in the body, if present.
+
+**Where progress notes live (GitHubIssuesBackend equivalent of `## Status`)**: there is no `## Status` section on a GitHub Issue; the equivalent is the **issue's comment thread** (`gh issue view <n> --json comments`). Surface the most recent meaningful progress comment as the active state, the same way `FilesBackend` surfaces the latest `## Status` entry.
+
+**Errors** — throw `task-not-found` if no issue with that number exists on `githubIssues.repo`. `gh` unavailable or unauthenticated → throw `backend-unavailable`.
+
+### `addTask(task)` — adding a new task to the `ROADMAP`
+
+1. **Create the issue**: `gh issue create --repo <githubIssues.repo> --title <title> --body <body> --label <githubIssues.stateMap.roadmap[0]>` (e.g. `status:roadmap`).
+2. **Add the priority label** if `priority` was given: a second `--label priority:P0|P1|P2` on the same `gh issue create` call.
+3. **Capture the assigned issue number** returned by `gh issue create` (parsed from the printed issue URL) and return it as the new canonical `id`.
+
+When `offlineMirror: true`, the same operation **also** writes a new local `roadmap/TASK_NNN_<slug>.md` with YAML frontmatter `backend: github-issues` + `backendId: <issue-number>`, plus an index entry in `ROADMAP.md`. The `TASK_NNN` is allocated locally (next sequential, following the `FilesBackend` numbering rule), independent of the GitHub issue number. Bundle the local file write with the `gh issue create` call as one logical transaction. Local-only — see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend--githubissuesbackend); never commit these writes.
+
+**Side effects** — the issue exists on `githubIssues.repo`, open, carrying `githubIssues.stateMap.roadmap[0]` (typically `status:roadmap`).
+
+**Errors** — invalid input (missing title) → throw. Permission denied by GitHub (e.g. no push access to the repo) → throw, surfacing the `gh` error verbatim.
+
+### `moveTask(id, fromBucket, toBucket)` — moving a task between buckets
+
+> **Moving INTO `history` is forbidden in this operation.** Use `appendHistoryEntry` instead — history transitions require PR metadata and close the issue.
+
+1. **Pre-check the source bucket.** Run `gh issue view <n> --repo <githubIssues.repo> --json labels`. Verify the issue currently carries a label in `githubIssues.stateMap[fromBucket]`. If not, throw `task-not-in-from-bucket`.
+2. **Swap the labels in one call.** Run `gh issue edit <n> --repo <githubIssues.repo> --remove-label <githubIssues.stateMap[fromBucket][0]> --add-label <githubIssues.stateMap[toBucket][0]>`. Bundling both label changes into a single `gh issue edit` invocation is what satisfies the contract's atomicity requirement — there is no separate multi-call transaction to compensate for.
+
+When `offlineMirror: true`, the same operation **also** rewrites the corresponding link entries in the local `ROADMAP.md` ↔ `IN_PROGRESS.md` (mirroring the `FilesBackend` behaviour). The local `roadmap/TASK_NNN_*.md` is **not** moved or renamed (indexed-layout rule). Both the local file edits and the `gh issue edit` call must succeed together — if the `gh` call fails, no local files are touched. Local-only — never commit these writes.
+
+**Errors** — `task-not-in-from-bucket`, `move-into-history-forbidden` (when `toBucket == "history"`), `backend-unavailable`.
+
+### `appendHistoryEntry(id, prMetadata)` — logging completed work
+
+The **load-bearing atomic operation** that enforces the [pre-merge tracking rule](#pre-merge-tracking-rule-load-bearing) above. Two steps in sequence:
+
+1. **Pre-check.** Run `gh issue view <n> --repo <githubIssues.repo> --json labels`. Verify the issue currently carries the label in `githubIssues.stateMap.inProgress` (using the camelCase key per the naming convention). If not, throw `task-not-in-progress`.
+2. **Swap the label and close the issue with the PR metadata as the closing comment, in one call.** Run:
+
+   ```
+   gh issue close <n> --repo <githubIssues.repo> --comment "<comment body>"
+   ```
+
+   formatted as:
+
+   ```markdown
+   ## Closed by PR [#<N>](<full GitHub URL>)
+
+   <1–2 sentence framing of why this PR existed.>
+
+   **Delivered:**
+   - <bullet>
+   - <bullet>
+
+   **Tests:** <one line on the validation done>
+
+   **Follow-ups:** (optional)
+   - <bullet>
+   ```
+
+   Immediately before or after the close (whichever the `gh` invocation order allows in one logical step), run `gh issue edit <n> --repo <githubIssues.repo> --remove-label <githubIssues.stateMap.inProgress[0]> --add-label <githubIssues.stateMap.history[0]>` to swap the status label to `status:done`.
+
+**Atomicity caveat** — `gh issue close --comment` and the label swap are two separate `gh` calls (GitHub's REST/GraphQL surface has no single call that closes, comments, and re-labels together). If the label swap succeeds but the close-with-comment fails (or vice versa):
+
+- **Do not** revert the side that succeeded — the task is genuinely done; reverting would be misleading.
+- **Retry** the failed call once. If it still fails, surface a clear warning to the user with the exact command that needs to be re-run manually, and continue.
+
+This caveat is documented in [`docs/RoadmapBackend.md` — Atomicity and rollback](../../docs/RoadmapBackend.md).
+
+When `offlineMirror: true`, the same operation **also** removes the `IN_PROGRESS.md` link entry and appends the standard `HISTORY.md` entry (entry shape identical to `FilesBackend.appendHistoryEntry` — `### <Title> — YYYY-MM-DD` / `**PR:** [#N](url)` / `**Delivered:** …` / `**Tests:** …` / `**Follow-ups:** …`), bundled with the `gh` calls above as one logical transaction. Local-only — never commit these writes.
+
+**Errors** — `task-not-in-progress`, missing required `prMetadata` fields, `backend-unavailable`.
+
+### `setReady(id, ready)` — set/clear the `ready` label
+
+Readiness is a dedicated **`ready`** label (lowercase, the literal string `ready`) on the issue.
+
+1. **Resolve the `ready` label.** If it does not exist on `githubIssues.repo`, create it via `gh label create ready` (the same setup-time guarantee documented in [`/create-roadmap`](../../commands/create-roadmap.md) means this should already exist; treat a missing label at call time as a repair, not the expected path).
+2. `setReady(id,true)` runs `gh issue edit <n> --repo <githubIssues.repo> --add-label ready`. `setReady(id,false)` runs `gh issue edit <n> --repo <githubIssues.repo> --remove-label ready`. A single `gh issue edit` call — atomic. Both add and remove are idempotent at the GitHub API level.
+
+When `offlineMirror: true`, mirror the `[ready]` token into the local `ROADMAP.md` entry (bundle with the `gh` call), parallel to how the other write ops mirror. Local-only — never commit this write.
+
+**Errors** — `task-not-found`, `backend-unavailable`.
+
+### `setPlan(id, markdown)` / `getPlan(id)` — store or retrieve the task plan
+
+The plan lives in the issue body, fenced by `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` delimiters. See [`docs/RoadmapBackend.md` — `setPlan`](../../docs/RoadmapBackend.md) for the canonical delimiter semantics (missing → empty, duplicate → first wins).
+
+- **`setPlan(id, markdown)`** — run `gh issue view <n> --repo <githubIssues.repo> --json body` to fetch the current body; rewrite the content of the first delimiter pair (or append a fresh delimited section if absent); run `gh issue edit <n> --repo <githubIssues.repo> --body <new body>`. When `offlineMirror: true`, also write `.plan/<id>.md` locally (bundled with the `gh` call), parallel to the `setReady` offline-mirror pattern. Local-only, same as every other offline-mirror write — never commit `.plan/<id>.md` for this backend.
+- **`getPlan(id)`** — run `gh issue view <n> --repo <githubIssues.repo> --json body` and extract the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` pair. No markers → returns empty.
+
+**Errors** — `task-not-found`, `backend-unavailable`.
+
+### `isAvailable()` — connectivity check
+
+For `GitHubIssuesBackend`, `isAvailable()` returns `true` iff **both**:
+
+1. The `gh` CLI binary is present on `PATH`.
+2. `gh auth status` reports an authenticated session.
+
+The check is a read-only auth probe — it does **not** call any Issues endpoint, so there is nothing to trigger an interactive login flow. If `gh auth status` itself would prompt interactively when unauthenticated, the skill treats a non-zero exit / "not logged in" output as `false` rather than following an interactive prompt. Return `false` if `gh` is missing or unauthenticated; `true` otherwise.
+
+Cross-reference [`docs/RoadmapBackend.md` — `GitHubIssuesBackend`](../../docs/RoadmapBackend.md) for the full `isAvailable` contract notes.
+
+When `isAvailable()` returns `false`, the skill surfaces this to the user (e.g. "`gh` is not authenticated — run `gh auth login`"). Operations that depend on `gh` throw `backend-unavailable` when called against an unavailable backend. For the activation-time behaviour when `isAvailable()` returns `false`, see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below — the skill falls back gracefully to the existing local snapshot rather than refusing to activate.
+
 ## Mirror auto-refresh on activation
 
 Applies when **all** of:
 
 - `.roadmap.json` exists at the repo root.
-- It declares a remote backend (`backend: "linear"` or `backend: "github-project"`).
+- It declares a remote backend (`backend: "linear"`, `backend: "github-project"`, or `backend: "github-issues"`).
 - It declares `offlineMirror: true`.
 
 On every skill activation in such a repo, the skill performs a mirror refresh **before** answering the user's prompt. This implements decision 8 in [TASK_001](../../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions): "automatic on skill activation; no background polling, no explicit `/refresh-roadmap` command in v1."
 
 ### Refresh procedure
 
-1. **Pre-check the backend's availability**: resolve the active backend from `.roadmap.json` and call that backend's `isAvailable()` — `LinearBackend.isAvailable()` or `GitHubProjectBackend.isAvailable()` (see [`isAvailable()` under Operations (LinearBackend)](#isavailable--connectivity-check-1) and [`isAvailable()` under Operations (GitHubProjectBackend)](#isavailable--connectivity-check-2)).
+1. **Pre-check the backend's availability**: resolve the active backend from `.roadmap.json` and call that backend's `isAvailable()` — `LinearBackend.isAvailable()`, `GitHubProjectBackend.isAvailable()`, or `GitHubIssuesBackend.isAvailable()` (see [`isAvailable()` under Operations (LinearBackend)](#isavailable--connectivity-check-1), [`isAvailable()` under Operations (GitHubProjectBackend)](#isavailable--connectivity-check-2), and [`isAvailable()` under Operations (GitHubIssuesBackend)](#isavailable--connectivity-check-3)).
 
-2. **If `isAvailable()` returns `false`** (the active backend's MCP is not registered or not reachable):
+2. **If `isAvailable()` returns `false`** (the active backend's MCP is not registered / not reachable, or — for `github-issues` — `gh` is missing or unauthenticated):
    - **Do not** attempt the refresh.
    - **Fall back to the existing local snapshot**: the user can still read `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, and every `roadmap/TASK_NNN_*.md` as they were at the last successful refresh.
    - **Surface a clear warning** at the start of the answer, naming the snapshot age and the reconnection hint. Examples:
      - _Linear backend_: _Linear MCP unreachable; showing the mirror snapshot from 2026-05-22 14:31. To restore: re-run `claude mcp add --transport http linear-server https://mcp.linear.app/mcp` (or check your network). Read-only operations work against the snapshot; write operations (`addTask`, `moveTask`, `appendHistoryEntry`) will throw `backend-unavailable` until the MCP is restored._
      - _GitHub Project backend_: _GitHub MCP unreachable; showing the mirror snapshot from 2026-05-22 14:31. To restore: re-register / reconnect the hosted GitHub MCP (endpoint `https://api.githubcopilot.com/mcp/`) and ensure the `project` OAuth scope is granted. Read-only operations work against the snapshot; write operations (`addTask`, `moveTask`, `appendHistoryEntry`) will throw `backend-unavailable` until the MCP is restored._
+     - _GitHub Issues backend_: _`gh` unavailable or unauthenticated; showing the mirror snapshot from 2026-05-22 14:31. To restore: install the `gh` CLI and/or run `gh auth login`. Read-only operations work against the snapshot; write operations (`addTask`, `moveTask`, `appendHistoryEntry`) will throw `backend-unavailable` until `gh` is restored._
    - Activation continues — the skill is still useful for reading the snapshot.
 
-3. **If `isAvailable()` returns `true`**, perform the refresh in this order against the active backend (`LinearBackend` or `GitHubProjectBackend`):
+3. **If `isAvailable()` returns `true`**, perform the refresh in this order against the active backend (`LinearBackend`, `GitHubProjectBackend`, or `GitHubIssuesBackend`):
    1. Call `listTasks("roadmap")`. Regenerate the index lines in `ROADMAP.md`, plus any new `roadmap/TASK_NNN_*.md` files for remote items that do not yet have a local file.
    2. Call `listTasks("in_progress")`. Regenerate the link lines in `IN_PROGRESS.md`.
    3. Call `listTasks("history")` **scoped by the history window** (see below). Regenerate the matching `HISTORY.md` entries.
@@ -599,7 +745,7 @@ On every skill activation in such a repo, the skill performs a mirror refresh **
 4. **Coherence rules** (per decision 3 in [TASK_001](../../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions)):
    - Match local task files to remote items by `backendId` in YAML frontmatter, **not** by title or slug.
    - New remote items that have no matching local file get new `roadmap/TASK_NNN_*.md` files with the next sequential `TASK_NNN` (per the [Numbering convention](../../commands/create-roadmap.md) — never reuse numbers).
-   - Local task files whose `backendId` no longer exists remotely are **flagged in the warning** at the start of the answer (e.g. `TASK_042 — backendId no longer exists in the remote backend (Linear issue / GitHub Project item); left in place for review`) but **not auto-deleted**. The user decides whether to remove them.
+   - Local task files whose `backendId` no longer exists remotely are **flagged in the warning** at the start of the answer (e.g. `TASK_042 — backendId no longer exists in the remote backend (Linear issue / GitHub Project item / GitHub Issue); left in place for review`) but **not auto-deleted**. The user decides whether to remove them.
    - When writing each `roadmap/TASK_NNN_*.md` file from a remote item's body, **split the `atelier:plan` section out of the body first**: extract the content between the first `<!-- atelier:plan:start -->` / `<!-- atelier:plan:end -->` pair, write the remainder to `roadmap/TASK_NNN_*.md`, and materialize the extracted plan as `.plan/<id>.md` (numeric id). If no delimiter markers are present, write the body as-is and skip the `.plan/<id>.md` write.
 
 5. **Safe failure mode**:
@@ -648,7 +794,25 @@ The `history` bucket can grow large over a long-running project. To bound the co
   }
   ```
 
-Supported `historyWindow` values (same grammar for both backends):
+- **GitHub Issues backend** — `githubIssues.historyWindow` in `.roadmap.json` (identical grammar):
+
+  ```json
+  {
+    "backend": "github-issues",
+    "offlineMirror": true,
+    "githubIssues": {
+      "repo": "acme/widgets",
+      "historyWindow": "90d",
+      "stateMap": {
+        "roadmap": ["status:roadmap"],
+        "inProgress": ["status:in-progress"],
+        "history": ["status:done"]
+      }
+    }
+  }
+  ```
+
+Supported `historyWindow` values (same grammar for all three backends):
 
 | Value | Meaning |
 | :--- | :--- |
@@ -663,7 +827,7 @@ Items older than the window remain accessible via `getTask(id)` on-demand — `g
 
 - **Local task file bodies that were modified by the refresh's own previous run**: this is fine, the next refresh will overwrite them again. The contract is read-only mirror; user-edited content is not preserved (decision 7).
 - **`.roadmap.json`**: never modified by the refresh. The config is the user's choice, not Linear's.
-- **`.git/info/exclude`**: never modified by the refresh. It is written only at `/create-roadmap` / `/migrate-roadmap` time (never the committed `.gitignore` — see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend)).
+- **`.git/info/exclude`**: never modified by the refresh. It is written only at `/create-roadmap` / `/migrate-roadmap` time (never the committed `.gitignore` — see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend--githubissuesbackend)).
 
 ## Format conventions
 
@@ -686,7 +850,7 @@ If the user asks to set up tracking on a repo that does not have these files yet
 ## Things this skill does NOT do
 
 - Does not edit `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md` without the user's request.
-- Does not push tracking commits to a protected branch directly. For `FilesBackend`, tracking updates ride on the same PR branch as the work they describe. For `LinearBackend`/`GitHubProjectBackend`, tracking IS the remote MCP call — the local offline-mirror files are read-only convenience copies and are never committed at all (see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend)).
+- Does not push tracking commits to a protected branch directly. For `FilesBackend`, tracking updates ride on the same PR branch as the work they describe. For `LinearBackend`/`GitHubProjectBackend`/`GitHubIssuesBackend`, tracking IS the remote call (MCP or `gh`) — the local offline-mirror files are read-only convenience copies and are never committed at all (see [Offline mirror writes are local-only](#offline-mirror-writes-are-local-only-linearbackend--githubprojectbackend--githubissuesbackend)).
 - Does not assume one layout — always detects first.
 - Does not invent PR numbers. If the PR is not yet open, log the entry with a placeholder and ask the user to confirm the number once it exists, **before** the PR is merged.
 - Does not invent the tracking flow on repos that do not use it. When predicate 3 fires alone (the user mentions the flow on a repo without the three tracking files and without `.roadmap.json`), the answer is to point at `/create-roadmap` and stop — **not** to extract priorities from a substitute markdown file in the repo. See [When this skill applies](#when-this-skill-applies) above for the full rule.
