@@ -206,11 +206,35 @@ exclude_removal_bullet="$(printf '%s\n' "$section_5d_text" | grep -i 'Remove fro
 if [ -z "$exclude_removal_bullet" ]; then
   fail "step 5d (lines $section_5d_start-$section_5d_end) has no 'Remove from \`.git/info/exclude\`' bullet to check for unconditional scope"
 else
-  for entry in 'ROADMAP.md' 'IN_PROGRESS.md' 'HISTORY.md' 'roadmap/' '.plan/'; do
-    if ! printf '%s' "$exclude_removal_bullet" | grep -qF "$entry"; then
-      fail "step 5d's exclude-removal bullet does not name '$entry' in the removal set"
-    fi
-  done
+  # The entry-naming half of this assertion must be checked against the
+  # REMOVAL-SET SPAN -- the portion of the bullet that actually enumerates
+  # what gets removed -- not the full bullet. The bullet's rationale prose
+  # (justifying WHY the removal must be unconditional) repeats some of the
+  # five entries, `.plan/` especially, several more times after the fact.
+  # Matching the whole bullet would let an edit that silently drops an
+  # entry from the real removal set slide through undetected as long as the
+  # rationale still happens to name it elsewhere. The removal set is stated
+  # BEFORE the bullet asserts the removal is unconditional, so that word is
+  # used as the (exclusive) end boundary of the span. If the boundary word
+  # cannot be found, fail loudly naming the reason rather than silently
+  # falling back to checking the full bullet (which would resurrect the
+  # vacuous check this replaces).
+  removal_set_found=1
+  if printf '%s' "$exclude_removal_bullet" | grep -qi 'unconditionally'; then
+    removal_set_span="$(printf '%s' "$exclude_removal_bullet" | sed -E 's/[Uu]nconditionally.*$//')"
+  else
+    fail "could not locate the removal-set span in step 5d's exclude-removal bullet -- no 'unconditionally' boundary found, so the removal-set entries cannot be checked separately from rationale prose"
+    removal_set_found=0
+  fi
+
+  if [ "$removal_set_found" -eq 1 ]; then
+    for entry in 'ROADMAP.md' 'IN_PROGRESS.md' 'HISTORY.md' 'roadmap/' '.plan/'; do
+      if ! printf '%s' "$removal_set_span" | grep -qF "$entry"; then
+        fail "step 5d's exclude-removal bullet does not name '$entry' in the removal set"
+      fi
+    done
+  fi
+
   if ! printf '%s' "$exclude_removal_bullet" | grep -qi 'unconditionally'; then
     fail "step 5d's exclude-removal bullet does not state the removal is unconditional"
   fi
