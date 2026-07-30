@@ -191,8 +191,36 @@ if printf '%s\n' "$section_5d_text" | grep -qi '\.gitignore'; then
   fi
 fi
 
+# --- Assertion 7: EXCLUDE REMOVAL IS UNCONDITIONAL, NOT SCOPED TO WHAT WAS
+# RECONSTRUCTED -- step 5d.5's exclude-removal bullet must (a) name all five
+# entries the forward legs may have added (`ROADMAP.md`, `IN_PROGRESS.md`,
+# `HISTORY.md`, `roadmap/`, `.plan/`) as the removal set, so a future edit
+# that silently drops `.plan/` from the list is caught, and (b) state the
+# removal is unconditional -- not restricted/scoped to whichever artefacts
+# step 5d.4 actually reconstructed. `.plan/` is only reconstructed when a
+# task body carried an `atelier:plan` section, so a "restricted to what was
+# reconstructed" qualifier would silently leave `.plan/` excluded for the
+# common no-plans case after authority flips to files -- exactly the class
+# of bug this PR fixes. Scoped strictly to the 5d section's line range. -----
+exclude_removal_bullet="$(printf '%s\n' "$section_5d_text" | grep -i 'Remove from `\.git/info/exclude`' | head -1)"
+if [ -z "$exclude_removal_bullet" ]; then
+  fail "step 5d (lines $section_5d_start-$section_5d_end) has no 'Remove from \`.git/info/exclude\`' bullet to check for unconditional scope"
+else
+  for entry in 'ROADMAP.md' 'IN_PROGRESS.md' 'HISTORY.md' 'roadmap/' '.plan/'; do
+    if ! printf '%s' "$exclude_removal_bullet" | grep -qF "$entry"; then
+      fail "step 5d's exclude-removal bullet does not name '$entry' in the removal set"
+    fi
+  done
+  if ! printf '%s' "$exclude_removal_bullet" | grep -qi 'unconditionally'; then
+    fail "step 5d's exclude-removal bullet does not state the removal is unconditional"
+  fi
+  if printf '%s' "$exclude_removal_bullet" | grep -Eqi 'restrict(ed)?[[:space:]]+to|only\b[^.]*reconstruct|scoped\b[^.]*reconstruct|correspond(s|ing)?[[:space:]]+to\b[^.]*reconstruct'; then
+    fail "step 5d's exclude-removal bullet appears to restrict/scope the removal to whichever artefacts were actually reconstructed -- the removal must be unconditional (all five entries, always), or the next backend with no plans will leave '.plan/' silently excluded after authority flips to files"
+  fi
+fi
+
 if [ "$failures" -eq 0 ]; then
-  echo "  ok: step 5d reverts the forward legs' .git/info/exclude entries and re-tracks the reconstructed files before removing .roadmap.json, cross-references are intact, forward legs are untouched, and .gitignore is never the mechanism"
+  echo "  ok: step 5d reverts the forward legs' .git/info/exclude entries (unconditionally, naming all five entries) and re-tracks the reconstructed files before removing .roadmap.json, cross-references are intact, forward legs are untouched, and .gitignore is never the mechanism"
   exit 0
 fi
 
