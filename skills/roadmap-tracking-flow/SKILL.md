@@ -305,6 +305,8 @@ Call the Linear MCP issue-list tool with:
 - `team`: from `linear.teamId`.
 - state filter: any state in `linear.stateMap[bucket]`.
 
+**Exhaust pagination.** The issue-list tool returns results page by page (cursor-based, `pageInfo.hasNextPage` / `endCursor` or the MCP's equivalent paging fields); its default page size does not guarantee every matching issue in one call. Keep calling issue-list with the next cursor until `hasNextPage` is `false`, then union all pages before building task elements — stopping after the first page silently truncates the bucket.
+
 Order: Linear's default sort (priority then created date) unless the user has a custom team view configured — defer to it where the MCP exposes views.
 
 For each returned issue, build a task element with:
@@ -452,7 +454,7 @@ Tool naming convention: the operations below refer to GitHub Projects v2 operati
 
 Resolve the Status values for the requested bucket via `githubProject.stateMap[bucket]` in `.roadmap.json` (e.g. `["Backlog", "Todo"]` for `"roadmap"` under the defaults; for `in_progress`, look up `githubProject.stateMap.inProgress` per the naming convention above).
 
-Call the project-item-list role to fetch project items, then filter to those whose Status value is in `githubProject.stateMap[bucket]`. For each matching item, build a task element with:
+Call the project-item-list role to fetch project items, then filter to those whose Status value is in `githubProject.stateMap[bucket]`. **Exhaust pagination** — `project-item-list` returns items page by page (GraphQL `pageInfo` / cursor semantics); a single call's default page size does not guarantee every item in the project. Keep calling project-item-list with the next cursor, following `pageInfo.hasNextPage` / `endCursor`, until `hasNextPage` is `false`, then union all pages before filtering — stopping after the first page silently truncates the bucket. For each matching item, build a task element with:
 
 - `id`: the item node id (`PVTI_...`).
 - `title`: from the item.
@@ -589,7 +591,7 @@ Every `gh` invocation below passes `--repo <githubIssues.repo>` explicitly rathe
 
 Resolve the label(s) for the requested bucket via `githubIssues.stateMap[bucket]` in `.roadmap.json` (e.g. `["status:roadmap"]` for `"roadmap"` under the defaults; for `in_progress`, look up `githubIssues.stateMap.inProgress` per the naming convention above).
 
-Run `gh issue list --repo <githubIssues.repo> --label <label> --json number,title,body,labels` for each label in `githubIssues.stateMap[bucket]` (union the results, de-duplicating by issue number). For `history`, add `--state closed` (issues in `status:done` are also closed by `appendHistoryEntry`, see below). For each returned issue, build a task element with:
+Run `gh issue list --repo <githubIssues.repo> --label <label> --json number,title,body,labels --limit 1000` for each label in `githubIssues.stateMap[bucket]` (union the results, de-duplicating by issue number). For `history`, add `--state closed` (issues in `status:done` are also closed by `appendHistoryEntry`, see below). **`--limit 1000` is mandatory** — `gh issue list` defaults to 30 results and silently truncates without an explicit `--limit`, which would drop tasks from the bucket unnoticed. **Verify the returned count**: if a call returns exactly 1000 issues (i.e. the limit itself), the bucket may still be truncated — re-issue the call with a higher `--limit` (e.g. `5000`) until a call returns fewer than its limit, confirming the full set was retrieved. For each returned issue, build a task element with:
 
 - `id`: the issue number (e.g. `42`).
 - `title`: from the issue title.
@@ -741,6 +743,8 @@ On every skill activation in such a repo, the skill performs a mirror refresh **
    1. Call `listTasks("roadmap")`. Regenerate the index lines in `ROADMAP.md`, plus any new `roadmap/TASK_NNN_*.md` files for remote items that do not yet have a local file.
    2. Call `listTasks("in_progress")`. Regenerate the link lines in `IN_PROGRESS.md`.
    3. Call `listTasks("history")` **scoped by the history window** (see below). Regenerate the matching `HISTORY.md` entries.
+
+   Each call above must exhaust pagination / use a non-truncating limit per its backend's `listTasks(bucket)` mandate (see [Operations](#operations-filesbackend) above — cursor pagination to `hasNextPage: false` for `linear` and `github-project`, `--limit 1000`+ re-check for `github-issues`). **Verify the returned set is complete before regenerating a bucket's files.** A call that cannot be confirmed complete (limit hit, paging loop aborted) is a failure for that bucket — handle it under the Safe failure mode below rather than regenerating from a partial result.
 
 4. **Coherence rules** (per decision 3 in [TASK_001](../../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions)):
    - Match local task files to remote items by `backendId` in YAML frontmatter, **not** by title or slug.

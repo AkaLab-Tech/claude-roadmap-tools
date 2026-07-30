@@ -101,9 +101,9 @@ Every operation is described by:
 - **Side effects** — none (read-only).
 - **Errors** — empty bucket returns an empty list (not an error). Backend unavailable throws (see `isAvailable`).
 - **`FilesBackend`** — reads `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md`. In indexed layout, follows each index link to the matching `roadmap/TASK_NNN_*.md` to enrich `body` and `priority`.
-- **`LinearBackend`** — queries Linear issues filtered by team and the states listed in `linear.stateMap[bucket]`.
-- **`GitHubProjectBackend`** — uses the project-detail operation (Projects v2 toolset) to fetch all items, then filters by the Status field values listed in `githubProject.stateMap[bucket]`.
-- **`GitHubIssuesBackend`** — runs `gh issue list --label <label> --json number,title,body,labels` for each label listed in `githubIssues.stateMap[bucket]`, against `githubIssues.repo`.
+- **`LinearBackend`** — queries Linear issues filtered by team and the states listed in `linear.stateMap[bucket]`. **Must exhaust pagination** — follow `pageInfo.hasNextPage` / `endCursor` and keep calling issue-list until `hasNextPage` is `false`; a single page is not guaranteed to hold every matching issue.
+- **`GitHubProjectBackend`** — uses the project-detail operation (Projects v2 toolset) to fetch all items, then filters by the Status field values listed in `githubProject.stateMap[bucket]`. **Must exhaust pagination** — follow `pageInfo.hasNextPage` / `endCursor` and keep calling project-item-list until `hasNextPage` is `false`.
+- **`GitHubIssuesBackend`** — runs `gh issue list --label <label> --json number,title,body,labels --limit 1000` for each label listed in `githubIssues.stateMap[bucket]`, against `githubIssues.repo`. **`--limit 1000` is mandatory** (the `gh` default is 30); if a call returns exactly the limit, re-issue with a higher `--limit` until a call returns fewer than its limit.
 
 ### `getTask(id)`
 
@@ -295,7 +295,7 @@ The _Buckets_ table above maps each bucket forward (files → remote). This tabl
 | `in_progress` | States in `stateMap.inProgress` | `IN_PROGRESS.md` index link lines |
 | `roadmap` | States in `stateMap.roadmap` | `ROADMAP.md` index entries + `roadmap/TASK_NNN_<slug>.md` task files |
 
-`listTasks(bucket)` is called for each of the three buckets; `getTask(id)` is called per task to enrich with body and metadata.
+`listTasks(bucket)` is called for each of the three buckets; `getTask(id)` is called per task to enrich with body and metadata. Each call must honor its backend's pagination/limit mandate (see [`listTasks(bucket)`](#listtasksbucket) above) and its completeness must be verified before the bucket is reconstructed — a migration that silently drops items past a page/limit boundary breaks the lossless guarantee this reconstruction promises.
 
 ### `backendId`-keyed coherence
 
