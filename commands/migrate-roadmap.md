@@ -168,6 +168,7 @@ Reconstructs the local indexed-`files` layout from the active remote backend (`l
    - State **explicitly** that `.roadmap.json` will be **removed** as part of this migration.
    - Note explicitly that `backend`/`backendId` frontmatter will be **stripped** from every written task file (see step 5d.4).
    - Note explicitly that any `atelier:plan` section will be extracted from each task body and materialized as `.plan/<id>.md` (numeric id) rather than appearing inside `roadmap/TASK_NNN_<slug>.md`.
+   - Note explicitly that, if the repo root is inside a git working tree, the `.git/info/exclude` entries the forward legs may have added for the reconstructed artefacts will be **removed**, and the reconstructed artefacts will be **re-tracked** (`git add`, not committed) — see step 5d.5.
    - Confirm or abort here. Zero side effects until the user confirms — no files written, no remote state mutated.
 
 4. **Reconstruct the indexed `files` layout atomically** (write all task files and index files as a single change set after the user confirms):
@@ -176,14 +177,19 @@ Reconstructs the local indexed-`files` layout from the active remote backend (`l
    - **`IN_PROGRESS.md`** — write one index link line per `in_progress` bucket task.
    - **`HISTORY.md`** — write entries grouped `## YYYY-MM`, newest first, matching the [`appendHistoryEntry` entry shape](../skills/roadmap-tracking-flow/SKILL.md#appendhistoryentryid-prmetadata--logging-completed-work).
 
-5. **Remove `.roadmap.json` as the inverse atomic checkpoint.** Its **absence** signals that local files are now authoritative — the inverse of the forward migration's `.roadmap.json` presence convention (5b.6 / 5c.6 / 5e.6). State this inversion explicitly when reporting. The remote source is left entirely untouched.
+5. **Revert the forward legs' local git tracking changes, and re-track the reconstructed files.** This must run **before** the `.roadmap.json` removal (next step): if this step fails, `.roadmap.json` is still present and the migration is cleanly re-runnable — the same "leave `.roadmap.json` in place on failure" property the partial-failure guard (step 5d.7) already gives steps 5d.2 and 5d.4.
+   - **If the repo root is inside a git working tree** (mirroring the forward legs' "If the repo root is inside a git working tree" conditional in 5b.7 / 5c.7 / 5e.7). If it is not, this whole step is a no-op — never error just because the reconstruction is happening outside a git working tree.
+     - **Remove from `.git/info/exclude`** exactly the lines the forward legs may have added — `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/` — restricted to whichever of those were actually reconstructed in step 5d.4. Be surgical: remove only those exact atelier-added lines, never rewrite, reorder, or truncate any other line in the file — any unrelated operator-added entries in `.git/info/exclude` must survive untouched. If the file is absent, or none of the entries are present, this is a clean no-op. **Never touch the committed `.gitignore`** — the forward legs never wrote to it, so there is nothing to undo there.
+     - **`git add`** the reconstructed artefacts (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, and `.plan/` if any plan files were written) so they are re-tracked and the migration shows up as a single reviewable `git diff` / `git status`, satisfying the "migration must be reviewable as a single git diff" safety rule. **Do not commit** — the commit stays with the operator, consistent with how the forward legs leave their own tracking changes "flagged as needing a commit" (step 6 report).
 
-6. **Partial-failure guard.**
-   - On any `listTasks` / `getTask` failure in step 5d.2, or any file-write failure in step 5d.4: **stop immediately**. Write nothing destructive. Leave `.roadmap.json` in place. **Never touch or mutate the remote source** (this direction is read-only against the remote). Report per-bucket success/failure with the underlying error.
+6. **Remove `.roadmap.json` as the inverse atomic checkpoint.** Its **absence** signals that local files are now authoritative — the inverse of the forward migration's `.roadmap.json` presence convention (5b.6 / 5c.6 / 5e.6). State this inversion explicitly when reporting. The remote source is left entirely untouched.
+
+7. **Partial-failure guard.**
+   - On any `listTasks` / `getTask` failure in step 5d.2, any file-write failure in step 5d.4, or any failure removing the `.git/info/exclude` entries or re-tracking the reconstructed files in step 5d.5: **stop immediately**. Write nothing destructive. Leave `.roadmap.json` in place. **Never touch or mutate the remote source** (this direction is read-only against the remote). Report per-bucket success/failure with the underlying error.
    - The reverse path being read-only against the remote is an inherent safety advantage over the forward 5b/5c/5e paths, which create remote items. If the reconstruction fails partway, the user can simply re-run — the remote source is unmodified.
    - **Lossiness note**: reconstruction is lossless for the §5 task model (title, body, bucket, `type`, `estimate`, `Ready`, `blocked_by`, plan). Remote-only metadata — backend-native ids (`ENG-123`, `PVTI_...`, GitHub Issue numbers), assignees, and comment threads — is inherently dropped. Document this in the report.
 
-7. Continue to step 6 (report).
+8. Continue to step 6 (report).
 
 ### 5e. `files (any layout) → github-issues` _(new in v1)_
 
@@ -213,7 +219,7 @@ Reconstructs the local indexed-`files` layout from the active remote backend (`l
 
 #### Fidelity (`files → github-project → files` round-trip)
 
-The following describes what survives and what is lost when authority is flipped back to local files (extending the lossiness note in step 5d.6).
+The following describes what survives and what is lost when authority is flipped back to local files (extending the lossiness note in step 5d.7).
 
 **Preserved (round-trips losslessly):**
 - Task title and body.
@@ -318,9 +324,10 @@ Same procedure as the Linear validation above, substituting the `github-issues` 
   - Note which of the seven required labels already existed on the repo vs were created in step 5e.1.
 - For `<remote backend> → files (indexed)`:
   - List every `roadmap/TASK_NNN_<slug>.md` created, plus the rebuilt index files (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`).
+  - **If the repo root is inside a git working tree** (step 5d.5): report the `.git/info/exclude` lines removed (or note "no matching entries present"), that the reconstructed artefacts were re-tracked (`git add`), and flag this as needing a commit — mirroring the forward legs' "flagged as needing a commit" phrasing.
   - Note that `.roadmap.json` was **removed** and local files are now authoritative.
   - Note the remote source was left entirely untouched (read-only against remote).
-  - Call out explicitly what was dropped (remote-only metadata: backend-native ids, assignees, comment threads) — see step 5d.6 lossiness note. For the `github-project` backend, the dropped backend-native ids are the `PVTI_...` Project item node ids. For the `linear` backend, the dropped backend-native id is the `ENG-123`-style Linear issue id (plus Linear comments / relations). For the `github-issues` backend, the dropped backend-native id is the GitHub Issue number (plus GitHub comments / assignees).
+  - Call out explicitly what was dropped (remote-only metadata: backend-native ids, assignees, comment threads) — see step 5d.7 lossiness note. For the `github-project` backend, the dropped backend-native ids are the `PVTI_...` Project item node ids. For the `linear` backend, the dropped backend-native id is the `ENG-123`-style Linear issue id (plus Linear comments / relations). For the `github-issues` backend, the dropped backend-native id is the GitHub Issue number (plus GitHub comments / assignees).
 
 ## Direction matrix
 
@@ -368,7 +375,7 @@ For `files (single-file) → linear`, the `TASK_NNN` assignment is computed once
 - **For `files → linear`, `files → github-project`, and `files → github-issues`, never write `.roadmap.json` until every push has succeeded.** `.roadmap.json` presence is the atomic checkpoint of a successful migration.
 - **For `files → linear`, `files → github-project`, or `files → github-issues` with `mirror: false`, the deletion of the four local artefacts is destructive.** It must be previewed in the step 3 migration plan and confirmed there — do not re-prompt at deletion time, because the user already saw and approved it.
 - If the user wants to abort mid-plan (before approving in step 5a.3, 5b.3, 5c.3, or 5e.3), do not leave partial state — no created issues/items, no written task files, no modified `.roadmap.json`.
-- **The `<remote backend> → files` reverse path (step 5d) is read-only against the remote.** No Project item, Linear issue, or GitHub Issue is created, updated, or deleted; the remote source is left entirely untouched. If the reconstruction fails partway through, `.roadmap.json` is left in place and the user can simply re-run — there is no remote cleanup required.
+- **The `<remote backend> → files` reverse path (step 5d) is read-only against the remote.** No Project item, Linear issue, or GitHub Issue is created, updated, or deleted; the remote source is left entirely untouched. If the reconstruction fails partway through, `.roadmap.json` is left in place and the user can simply re-run — there is no remote cleanup required. Step 5d.5's `.git/info/exclude` cleanup and re-tracking touch only local git plumbing (the exclude file and the index) — never the remote.
 
 ## Arguments
 
