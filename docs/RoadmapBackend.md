@@ -81,6 +81,25 @@ A task carries at least: `id`, `title`, `body`. Implementations may include `pri
 - `priority` for `FilesBackend`: which markdown section the index entry lives under (`High Priority`, `Medium Priority`, `Low Priority / Ideas`).
 - `priority` for `LinearBackend`: Linear's priority field (1=Urgent, 2=High, 3=Medium, 4=Low, 0=No priority). The mapping to/from the markdown sections is documented per backend below.
 
+#### Content identity (optional fields)
+
+Some backends store a task inside a wrapper whose underlying content may or may not be a first-class issue. Where that distinction exists, the backend carries it on the task record so a consumer never has to make a second round-trip to discover it:
+
+| Field | Type | Meaning |
+| :--- | :--- | :--- |
+| `contentType` | `"Issue" \| "PullRequest" \| "DraftIssue"` | What the item actually wraps. |
+| `issueNumber` | integer | The underlying issue's number. Present only when the content is a real issue. |
+| `issueRepo` | `"<owner>/<name>"` | The repository that issue belongs to. Present only when the content is a real issue. |
+
+These fields are **optional and omittable**: a backend that has no such distinction does not carry them, and **every consumer must tolerate their absence** rather than treating a missing field as an error or as a negative answer.
+
+- **`FilesBackend`** — omits all three. A markdown task has no wrapped content.
+- **`LinearBackend`** — omits all three. A Linear issue is always an issue.
+- **`GitHubProjectBackend`** — carries all three. A Projects v2 item's `content` is a union of `Issue` / `PullRequest` / `DraftIssue`, and `addTask` creates **draft** items by default, so the distinction is real and load-bearing: only issue-backed items can carry native sub-issues. These are extra fields, not extra calls — additional selections on the project-detail item query the operation already makes.
+- **`GitHubIssuesBackend`** — carries `contentType: "Issue"` and `issueNumber` (identical to `backendId`) and `issueRepo` (`githubIssues.repo`). Every task in this backend is an issue by construction.
+
+Without these fields a consumer that needs to know whether an item is issue-backed has no choice but to re-query each candidate by node id — one round-trip per item, on a board where the answer is nearly always the same. That is the cost these fields exist to remove.
+
 ## Operations
 
 Every operation is described by:
@@ -91,9 +110,15 @@ Every operation is described by:
 - **Errors** — failure modes (always thrown, never silent).
 - **Per-backend notes** — implementation specifics (or "Same across backends").
 
-### `listTasks(bucket)`
+### `listTasks(bucket, options?)`
 
-- **Inputs** — `bucket`: one of `"roadmap" | "in_progress" | "history"`.
+- **Inputs** —
+  - `bucket`: one of `"roadmap" | "in_progress" | "history"`.
+  - `options.maxStaleness` (optional): how old an answer the caller is willing to accept. **Omitting it means authoritative**, so every call site written before this option existed keeps exactly its current meaning.
+    - omitted, or `"0"` — authoritative. Read the backend, exhausting pagination per the per-backend mandates below. No snapshot is consulted.
+    - `"mirror"` — accept the project's configured `mirrorTTL` (see [`mirrorTTL`](#mirrorttl)). Served from the offline mirror's snapshot when one is fresh, complete and schema-current; otherwise a refresh runs first and the answer is served from that.
+    - `"<N>m"` / `"<N>h"` — accept a snapshot up to that age, whatever `mirrorTTL` says.
+    - Any value other than omitted/`"0"` requires `offlineMirror: true`. Against a project with no mirror it is ignored and the read is authoritative — a caller asking for cheapness on a project that cannot provide it gets correctness, never an error.
 - **Returns** — ordered list of tasks.
   - For `roadmap` and `in_progress`: in the order the bucket is human-curated (sections / Linear's display order).
   - For `history`: newest entry first.
@@ -102,14 +127,19 @@ Every operation is described by:
 - **Errors** — empty bucket returns an empty list (not an error). Backend unavailable throws (see `isAvailable`).
 - **`FilesBackend`** — reads `ROADMAP.md` / `IN_PROGRESS.md` / `HISTORY.md`. In indexed layout, follows each index link to the matching `roadmap/TASK_NNN_*.md` to enrich `body` and `priority`.
 - **`LinearBackend`** — queries Linear issues filtered by team and the states listed in `linear.stateMap[bucket]`. **Must exhaust pagination** — follow `pageInfo.hasNextPage` / `endCursor` and keep calling issue-list until `hasNextPage` is `false`; a single page is not guaranteed to hold every matching issue.
-- **`GitHubProjectBackend`** — uses the project-detail operation (Projects v2 toolset) to fetch all items, then filters by the Status field values listed in `githubProject.stateMap[bucket]`. **Must exhaust pagination** — follow `pageInfo.hasNextPage` / `endCursor` and keep calling project-item-list until `hasNextPage` is `false`.
+- **`GitHubProjectBackend`** — uses the project-detail operation (Projects v2 toolset) to fetch all items, then filters by the Status field values listed in `githubProject.stateMap[bucket]`. **Must exhaust pagination** — follow `pageInfo.hasNextPage` / `endCursor` and keep calling project-item-list until `hasNextPage` is `false`. The item selection **must** include the content union (`content { __typename ... on Issue { number repository { owner { login } name } } }`) so each returned record carries `contentType` / `issueNumber` / `issueRepo` (see [Content identity](#content-identity-optional-fields)). These are extra fields on a query the operation already makes, not extra calls.
 - **`GitHubIssuesBackend`** — runs `gh issue list --label <label> --json number,title,body,labels --limit 1000` for each label listed in `githubIssues.stateMap[bucket]`, against `githubIssues.repo`. **`--limit 1000` is mandatory** (the `gh` default is 30); if a call returns exactly the limit, re-issue with a higher `--limit` until a call returns fewer than its limit.
+
+**The pagination mandates above govern an authoritative read** — the default, and every read a refresh performs. They are not weakened by `maxStaleness`: a cache hit does not paginate because it does not call the backend at all, and a cache miss falls through to a refresh, which paginates in full.
+
+**Cache service is explicit, never implicit.** A snapshot never silently substitutes for the backend. A consumer that wants a cheap backlog listing asks for one by passing `maxStaleness`; a consumer that needs authority gets it by saying nothing, without needing to know that mirrors exist. This is deliberate: a call that looks authoritative but quietly answers from a days-old snapshot is the kind of defect that surfaces months later as inexplicably stale data, and no existing consumer of this contract asked for a cache.
 
 ### `getTask(id)`
 
 - **Inputs** — canonical `id`.
 - **Returns** — the full task: `id`, `title`, `body`, `priority`, current bucket, backend-specific metadata.
 - **Side effects** — none.
+- **Never served from a snapshot.** `getTask` takes no `maxStaleness` and always reads the backend, even on a project with a fresh offline mirror. This is the correctness guard that makes cached discovery safe: a consumer may shortlist candidates from a snapshot, but the one item it is about to act on is re-read from the source, and that fresh read is where the item's bucket and readiness are actually verified. One item costs approximately nothing; being wrong about it costs a claimed task.
 - **Errors** — throws `task-not-found` if the id is unknown. Backend unavailable throws.
 - **`FilesBackend`** — reads `roadmap/TASK_NNN_*.md` when in indexed layout; otherwise extracts the task block from the bucket file in single-file layout.
 - **`LinearBackend`** — calls the Linear MCP issue-fetch tool with the issue id.
@@ -237,8 +267,8 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - Identity: Linear issue ID (e.g. `ENG-123`).
 - State mapping: `linear.stateMap` in `.roadmap.json`. Defaults shipped: `roadmap: ["Backlog", "Todo"]`, `inProgress: ["In Progress"]`, `history: ["Done", "Cancelled"]`. Users override per team.
 - Team selection: `linear.teamId` in `.roadmap.json`. `/create-roadmap` writes this during setup.
-- History window for refresh: `linear.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Bounds the cost of `listTasks("history")` on every skill activation. Supported values: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"` (last N entries), or `"all"` (no limit). Issues outside the window remain accessible via `getTask(id)` on-demand. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md) for the full semantics.
-- Offline mirror: when `offlineMirror: true`, the skill maintains five local paths (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/`) as a one-way read-only mirror of Linear's state — local-only, never committed, kept out of git via `.git/info/exclude`. The mirror refreshes automatically every time the skill activates. See [TASK_001 — Offline mirror semantics](../roadmap/TASK_001_multi-backend-linear-first.md#offline-mirror-semantics).
+- History window for refresh: `linear.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Bounds the cost of `listTasks("history")` on each refresh. Supported values: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"` (last N entries), or `"all"` (no limit). Issues outside the window remain accessible via `getTask(id)` on-demand. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md) for the full semantics.
+- Offline mirror: when `offlineMirror: true`, the skill maintains five local paths (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/`) as a one-way read-only mirror of Linear's state — local-only, never committed, kept out of git via `.git/info/exclude`. The mirror refreshes on activation when its snapshot is older than `mirrorTTL` (default one hour) — see [Offline mirror: freshness, snapshot layout, and cache service](#offline-mirror-freshness-snapshot-layout-and-cache-service). See [TASK_001 — Offline mirror semantics](../roadmap/TASK_001_multi-backend-linear-first.md#offline-mirror-semantics).
 
 ### `GitHubProjectBackend`
 
@@ -258,8 +288,8 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **`blocked_by`** — stored as a plain text field on the Project item. Projects v2 has **no** native dependency or relations field; this is a known limitation. The text field holds a comma-separated list of blocking task ids (e.g. `TASK_003, TASK_005`) as a convention.
 - **`isAvailable()`** — inspects the registered MCP server list in Claude Code for a host/name match against `api.githubcopilot.com/mcp`. Returns a boolean. Issues no API call, avoiding OAuth on first use — exactly mirroring the `LinearBackend` pattern.
 - **Project and owner selection**: `githubProject.owner` (GitHub org or user login) plus either `githubProject.projectNumber` (the integer shown in the Project URL) or the Project node id, recorded in `.roadmap.json`. Mirrors `LinearBackend`'s `linear.teamId` selection pattern. `/create-roadmap` writes these during setup.
-- **Offline mirror**: when `offlineMirror: true`, the skill maintains five local paths (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/`) as a one-way read-only mirror of the Project's state — local-only, never committed, kept out of git via `.git/info/exclude`. The mirror refreshes automatically every time the skill activates. Each local task file carries `backend: github-project` + `backendId: PVTI_...` frontmatter; coherence between local files and remote items is by `backendId`, not by title or slug. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation).
-- **History window for refresh**: `githubProject.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Bounds the cost of `listTasks("history")` on every skill activation. Supported values: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"` (last N entries), or `"all"` (no limit). Items outside the window remain accessible via `getTask(id)` on-demand. Same grammar as `linear.historyWindow`. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation) for the full semantics.
+- **Offline mirror**: when `offlineMirror: true`, the skill maintains five local paths (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/`) as a one-way read-only mirror of the Project's state — local-only, never committed, kept out of git via `.git/info/exclude`. The mirror refreshes on activation when its snapshot is older than `mirrorTTL` (default one hour) — see [Offline mirror: freshness, snapshot layout, and cache service](#offline-mirror-freshness-snapshot-layout-and-cache-service). Each local task file carries `backend: github-project` + `backendId: PVTI_...` frontmatter; coherence between local files and remote items is by `backendId`, not by title or slug. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation).
+- **History window for refresh**: `githubProject.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Bounds the cost of `listTasks("history")` on each refresh. Supported values: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"` (last N entries), or `"all"` (no limit). Items outside the window remain accessible via `getTask(id)` on-demand. Same grammar as `linear.historyWindow`. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation) for the full semantics.
 
 ### `GitHubIssuesBackend`
 
@@ -273,8 +303,87 @@ The load-bearing operation that enforces the pre-merge tracking rule.
 - **`isAvailable()`** — `gh` binary present on `PATH` **and** `gh auth status` reports an authenticated session. No Issues API call. See the `isAvailable()` per-backend note above.
 - **Repo selection**: `githubIssues.repo` (`"<owner>/<name>"`, e.g. `"acme/widgets"`) in `.roadmap.json` — every `gh issue` invocation passes `--repo <githubIssues.repo>` explicitly rather than relying on the invoking shell's `cwd` remote, so the backend behaves the same whether or not the current directory happens to be a clone of that repo. Mirrors `LinearBackend`'s `linear.teamId` / `GitHubProjectBackend`'s `githubProject.owner` selection pattern. `/create-roadmap` writes this during setup.
 - **Label validation before first use** — because labels are free-text and easy to fat-finger (a typo silently creates a look-alike label that no `stateMap` entry matches, quietly breaking `listTasks`), `/create-roadmap`'s `github-issues` setup step runs `gh label list --repo <githubIssues.repo>` and creates any of `status:roadmap`, `status:in-progress`, `status:done`, `ready`, `priority:P0`, `priority:P1`, `priority:P2` that are missing via `gh label create` **before** the config is considered ready. This is the mitigation for the "less-structured-than-a-Project's-custom-fields" risk noted in the task plan — labels have no schema, so the setup step is the closest available approximation to Projects v2's constrained field options.
-- **Offline mirror**: when `offlineMirror: true`, identical five-path mechanism (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/`) as `LinearBackend`/`GitHubProjectBackend` — local-only, never committed, kept out of git via `.git/info/exclude`, refreshed automatically on every skill activation. Each local task file carries `backend: github-issues` + `backendId: <issue-number>` frontmatter; coherence is by `backendId`, not title or slug. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation).
-- **History window for refresh**: `githubIssues.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Same grammar and defaults as `linear.historyWindow` / `githubProject.historyWindow`: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"`, or `"all"`. Bounds the cost of `listTasks("history")` (a `gh issue list --label status:done --state closed` call) on every skill activation.
+- **Offline mirror**: when `offlineMirror: true`, identical five-path mechanism (`ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/`, `.plan/`) as `LinearBackend`/`GitHubProjectBackend` — local-only, never committed, kept out of git via `.git/info/exclude`, refreshed on activation when its snapshot is older than `mirrorTTL` (default one hour) — see [Offline mirror: freshness, snapshot layout, and cache service](#offline-mirror-freshness-snapshot-layout-and-cache-service). Each local task file carries `backend: github-issues` + `backendId: <issue-number>` frontmatter; coherence is by `backendId`, not title or slug. See [Mirror auto-refresh on activation](../skills/roadmap-tracking-flow/SKILL.md#mirror-auto-refresh-on-activation).
+- **History window for refresh**: `githubIssues.historyWindow` in `.roadmap.json` (only meaningful with `offlineMirror: true`). Same grammar and defaults as `linear.historyWindow` / `githubProject.historyWindow`: `"90d"` (default), any `"<N>d"`, a bare integer like `"50"`, or `"all"`. Bounds the cost of `listTasks("history")` (a `gh issue list --label status:done --state closed` call) on each refresh.
+
+## Offline mirror: freshness, snapshot layout, and cache service
+
+Applies to every remote backend (`linear`, `github-project`, `github-issues`) whose `.roadmap.json` declares `offlineMirror: true`. `FilesBackend` has no mirror — the filesystem is already the backend — and ignores this section entirely.
+
+### One fetch, two faces
+
+A mirror refresh reads the backend **once** and writes two renderings of that single read:
+
+- **The human face** — `ROADMAP.md`, `IN_PROGRESS.md`, `HISTORY.md`, `roadmap/TASK_NNN_*.md`, `.plan/<id>.md`. Prose, for the operator to read. Exactly what this document already specifies.
+- **The machine face** — a structured snapshot index, specified below. This is what a programmatic consumer (backlog discovery, status reporting) reads.
+
+These are **not two caches**. One fetch, one `fetchedAt`, one TTL governing both. A refresh that writes one face and not the other is a failed refresh, handled under the mirror refresh's Safe failure mode.
+
+**Why the machine face is necessary.** The human face cannot answer the question a programmatic consumer asks. `ROADMAP.md` index lines carry `<type> <title> #id ~estimate`; task-file frontmatter carries `backend` and `backendId`. Neither carries the item's bucket Status, its readiness, or its content type — so a consumer reading only the human face would have to open every task file in the mirror and would still not have the fields it opened them for. Discovery needs columns; the operator needs prose. One read, rendered twice.
+
+### Snapshot location and layout
+
+The snapshot is keyed by **the board, not the repository**. One board commonly backs several repos, and keying by repo would store one redundant copy per clone, each refreshing independently. It therefore lives outside any repo, under the atelier config dir:
+
+```
+$ATELIER_CONFIG_DIR/cache/<backend-key>/
+  meta.json          # provenance and freshness
+  index.json         # one record per item, across all three buckets
+  bodies/<id>.md     # item body, one file per item, named by canonical id
+```
+
+`<backend-key>` names the remote collection: `project-<owner>-<projectNumber>` for `github-project`, `linear-<teamId>` for `linear`, `issues-<owner>-<repo>` for `github-issues`.
+
+`meta.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "backend": "github-project",
+  "fetchedAt": "2026-08-28T09:14:02Z",
+  "buckets": ["roadmap", "in_progress", "history"],
+  "items": 596,
+  "complete": true
+}
+```
+
+- `schemaVersion` is **mandatory**. It is the reader's trust boundary — see [Reading a snapshot you did not write](#reading-a-snapshot-you-did-not-write).
+- `fetchedAt` is an ISO-8601 UTC instant, never a bare calendar date. Staleness is **computed** from it; it is not inferred by comparing date strings.
+- `complete` is `false` when any bucket's pagination could not be confirmed exhausted. **An incomplete snapshot is never served as a cache hit.**
+
+### Declare a field or omit it — never carry a column you do not fill
+
+Every field a snapshot record declares **must be populated wherever that datum exists on the board**. A column that is structurally always `null` is worse than an absent column: the next reader takes its presence as evidence the data is available and silently gets nothing back. If a backend cannot source a field, that field is not in its records at all.
+
+Two consequences are worth stating outright, because both have already been got wrong in hand-built snapshots:
+
+- **`priority` requires a declared provenance.** It is not free and it is not always present. For `github-project` it is read from the Project's `Priority` single-select field where that field exists, else parsed from a `**Priority:** P<N>` line in the item body, else absent. A `null` therefore means *no priority is declared on the board* — a real, meaningful value that consumers map to the lowest priority band — and never "we did not go and look".
+- **Do not restate what `title` already carries.** This flow's own entry format puts type and estimate inside the title (`<type> <title> #id ~estimate`); a consumer parses them out of `title` exactly as it parses a markdown index line. They are not separate columns, and adding them as columns that only sometimes get filled reintroduces precisely the problem above.
+
+### `mirrorTTL`
+
+How stale a snapshot may be before `maxStaleness: "mirror"` treats it as a miss. Backend-scoped, alongside `historyWindow`: `linear.mirrorTTL`, `githubProject.mirrorTTL`, `githubIssues.mirrorTTL`.
+
+| Value | Meaning |
+| :--- | :--- |
+| `"1h"` (default if omitted) | The snapshot is fresh for one hour after `fetchedAt`. |
+| `"<N>m"` / `"<N>h"` | Same shape, different window. |
+| `"0"` | No snapshot is ever fresh; every read is authoritative. Disables cache service without disabling the mirror. |
+
+This **replaces** the previous rule that the mirror refreshes every time the skill activates, and it replaces any once-per-calendar-day approximation of it. One cadence, computed from `fetchedAt`.
+
+### Writes are write-through, and a write is not a refresh
+
+`addTask`, `moveTask`, `setReady`, `setPlan` and `appendHistoryEntry` each update the snapshot from **the values they just wrote**, in the same logical transaction as the remote call. Two rules govern this:
+
+- **Never read the board back** to learn what was just written. The caller already holds those values; a read-back is a round-trip that buys nothing and can only introduce a window in which the write appears not to have happened.
+- **Never advance `fetchedAt`.** A write is not a refresh. Advancing the timestamp would silently extend the staleness window of every *other* record in the snapshot by a full TTL: the single item the write touched is current, and everything around it is exactly as old as it was a moment before. A snapshot's timestamp must describe when the board was last *read*, not when it was last *written to*.
+
+### Reading a snapshot you did not write
+
+A snapshot directory is **untrusted input**. It may predate the current schema, may have been left behind by a different tool or an earlier hand-built experiment, may be half-written from an interrupted refresh. Before serving a single record from it, a reader **must** confirm that `meta.json` exists, parses, carries the current `schemaVersion`, and reports `complete: true`. Anything else — file missing, JSON unparseable, `schemaVersion` absent or older, `complete: false` — is a **cache miss**: discard it and refetch. Never repair a foreign snapshot in place, and never fall back to reading it "as far as it goes".
+
+This is worth a hard rule rather than a best effort because the failure it prevents is invisible. A plausible-looking index of unknown provenance yields a backlog that is quietly days old and several items short, with nothing anywhere in the output to say so — the reader believes it is looking at the board.
 
 ## Reverse reconstruction (remote → files)
 
@@ -295,7 +404,7 @@ The _Buckets_ table above maps each bucket forward (files → remote). This tabl
 | `in_progress` | States in `stateMap.inProgress` | `IN_PROGRESS.md` index link lines |
 | `roadmap` | States in `stateMap.roadmap` | `ROADMAP.md` index entries + `roadmap/TASK_NNN_<slug>.md` task files |
 
-`listTasks(bucket)` is called for each of the three buckets; `getTask(id)` is called per task to enrich with body and metadata. Each call must honor its backend's pagination/limit mandate (see [`listTasks(bucket)`](#listtasksbucket) above) and its completeness must be verified before the bucket is reconstructed — a migration that silently drops items past a page/limit boundary breaks the lossless guarantee this reconstruction promises.
+`listTasks(bucket)` is called for each of the three buckets; `getTask(id)` is called per task to enrich with body and metadata. Each call must honor its backend's pagination/limit mandate (see [`listTasks(bucket, options?)`](#listtasksbucket-options) above) and its completeness must be verified before the bucket is reconstructed — a migration that silently drops items past a page/limit boundary breaks the lossless guarantee this reconstruction promises.
 
 ### `backendId`-keyed coherence
 

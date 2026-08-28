@@ -60,7 +60,7 @@ On every skill activation, run the detection in this order **before** answering 
 
 2. **For `files` backend**, detect the layout (single-file vs indexed) as documented in [Layouts: single-file vs indexed](#layouts-single-file-vs-indexed) above. The chosen layout governs how each operation reads and writes files.
 
-3. **For any remote backend (`linear`, `github-project`, or `github-issues`) with `offlineMirror: true`**, run the mirror auto-refresh (see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below) **before** answering the user's prompt. The refresh is part of activation, not a separate step the user invokes.
+3. **For any remote backend (`linear`, `github-project`, or `github-issues`) with `offlineMirror: true`**, consider the mirror auto-refresh (see [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) below) **before** answering the user's prompt. The refresh is part of activation, not a separate step the user invokes — but it is **TTL-gated**: when the existing snapshot is younger than `mirrorTTL` (default one hour), activation proceeds against it and no board read happens at all. Refreshing unconditionally on every activation is what this gate replaces.
 
 4. **For any remote backend (`linear`, `github-project`, or `github-issues`) with `offlineMirror: false`**, no local files exist (the repo is remote-only). All operations route through the appropriate backend and execute against the remote in real-time. No refresh step is needed because there is no mirror to refresh.
 
@@ -459,14 +459,15 @@ Call the project-item-list role to fetch project items, then filter to those who
 - `id`: the item node id (`PVTI_...`).
 - `title`: from the item.
 - `current_bucket`: derived by reverse-mapping the item's Status through `githubProject.stateMap`.
+- `contentType`, and — only when the content is an `Issue` — `issueNumber` and `issueRepo`. Select the content union in the same project-item-list query (`content { __typename ... on Issue { number repository { owner { login } name } } }`); these are extra **fields**, not extra **calls**. See [`docs/RoadmapBackend.md` — Content identity](../../docs/RoadmapBackend.md#content-identity-optional-fields). A consumer that needs to know whether an item is issue-backed — because only issue-backed items can carry native sub-issues — reads this field instead of re-querying every candidate by node id.
 
-When `offlineMirror: true`, this operation also refreshes the corresponding section of the local mirror as part of the [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) procedure.
+When `offlineMirror: true`, this operation also refreshes the corresponding section of the local mirror as part of the [Mirror auto-refresh on activation](#mirror-auto-refresh-on-activation) procedure. When the caller passed `maxStaleness` and a fresh, complete, schema-current snapshot exists, the answer is served from that snapshot and **none** of the calls above are made; see [`docs/RoadmapBackend.md` — `listTasks(bucket, options?)`](../../docs/RoadmapBackend.md#listtasksbucket-options).
 
 **Errors** — empty bucket returns an empty list (not an error). MCP unavailable → throw `backend-unavailable`.
 
 ### `getTask(id)` — fetch a single task's full content
 
-Call the item-fetch role with the canonical `PVTI_...` node id.
+Call the item-fetch role with the canonical `PVTI_...` node id. **This call is never served from the snapshot**, whatever the mirror's freshness — it is the authoritative single-item read that a cached listing is designed to be checked against.
 
 Return:
 
@@ -724,7 +725,16 @@ Applies when **all** of:
 - It declares a remote backend (`backend: "linear"`, `backend: "github-project"`, or `backend: "github-issues"`).
 - It declares `offlineMirror: true`.
 
-On every skill activation in such a repo, the skill performs a mirror refresh **before** answering the user's prompt. This implements decision 8 in [TASK_001](../../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions): "automatic on skill activation; no background polling, no explicit `/refresh-roadmap` command in v1."
+On skill activation in such a repo, the skill considers a mirror refresh **before** answering the user's prompt. This implements decision 8 in [TASK_001](../../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions): "automatic on skill activation; no background polling, no explicit `/refresh-roadmap` command in v1." Activation remains the only trigger — what has changed is that activation no longer *implies* a board read.
+
+### Freshness gate (TTL)
+
+The refresh is gated on a TTL, not performed unconditionally. Read `fetchedAt` from the snapshot's `meta.json` (see [Snapshot index](#snapshot-index-the-machine-face) below) and compare it against `mirrorTTL` — `linear.mirrorTTL` / `githubProject.mirrorTTL` / `githubIssues.mirrorTTL` in `.roadmap.json`, **default `"1h"`**, grammar `"<N>m"` / `"<N>h"` / `"0"` (never fresh).
+
+- **Snapshot is younger than `mirrorTTL`, complete, and schema-current** → **no refresh, and no board read of any kind.** Activation proceeds against the existing mirror.
+- **Otherwise** → run the refresh procedure below.
+
+Two cadences this replaces, both wrong in different directions: refreshing on *every* activation (a full board sweep per session, which on a large board exhausts the backend's rate budget), and a once-per-calendar-day stamp (a date string cannot express "an hour ago", and it makes the first activation after midnight expensive and every other activation blind). Freshness is **computed** from an ISO-8601 instant. It is never inferred from a date.
 
 ### Refresh procedure
 
@@ -744,6 +754,8 @@ On every skill activation in such a repo, the skill performs a mirror refresh **
    2. Call `listTasks("in_progress")`. Regenerate the link lines in `IN_PROGRESS.md`.
    3. Call `listTasks("history")` **scoped by the history window** (see below). Regenerate the matching `HISTORY.md` entries.
 
+   4. Write **both faces of the mirror from this one read** — the markdown files above (the human face) *and* the snapshot index (the machine face, see below) — then stamp `fetchedAt`. A refresh that updates one face and not the other is a failed refresh: handle it under the Safe failure mode rather than leaving the two faces describing different boards.
+
    Each call above must exhaust pagination / use a non-truncating limit per its backend's `listTasks(bucket)` mandate (see [Operations](#operations-filesbackend) above — cursor pagination to `hasNextPage: false` for `linear` and `github-project`, `--limit 1000`+ re-check for `github-issues`). **Verify the returned set is complete before regenerating a bucket's files.** A call that cannot be confirmed complete (limit hit, paging loop aborted) is a failure for that bucket — handle it under the Safe failure mode below rather than regenerating from a partial result.
 
 4. **Coherence rules** (per decision 3 in [TASK_001](../../roadmap/TASK_001_multi-backend-linear-first.md#design-decisions)):
@@ -756,6 +768,27 @@ On every skill activation in such a repo, the skill performs a mirror refresh **
    - If any individual `listTasks` call fails mid-refresh, **stop that bucket's refresh** and keep the previous local snapshot for that bucket intact. Do **not** half-write the bucket's files.
    - Refresh of other buckets that already completed successfully stays applied.
    - Surface the partial-refresh state clearly: name the buckets that succeeded vs failed, and the underlying error per failed bucket.
+
+### Snapshot index (the machine face)
+
+The markdown mirror is prose for the operator; it cannot answer a structured query. Its `ROADMAP.md` index lines carry `<type> <title> #id ~estimate` and its task-file frontmatter carries `backend` / `backendId` — neither carries the item's Status, its readiness, or its content type. A consumer needing those would have to open every task file and would still come away without them.
+
+So the same refresh also writes a structured snapshot, keyed by **the board rather than the repo** (one board often backs several repos):
+
+```
+$ATELIER_CONFIG_DIR/cache/<backend-key>/
+  meta.json          # schemaVersion, backend, fetchedAt, buckets, items, complete
+  index.json         # one record per item, across all three buckets
+  bodies/<id>.md     # item body, one file per item, named by canonical id
+```
+
+`<backend-key>` is `project-<owner>-<projectNumber>` / `linear-<teamId>` / `issues-<owner>-<repo>`.
+
+Three rules bind the writer and the reader. The full specification is [`docs/RoadmapBackend.md` — Offline mirror](../../docs/RoadmapBackend.md#offline-mirror-freshness-snapshot-layout-and-cache-service):
+
+1. **Populate every field you declare.** A column that is structurally always `null` is worse than no column, because the next reader takes its presence as evidence the data is there. `priority` in particular needs a declared provenance (Project `Priority` field, else a `**Priority:** P<N>` line in the body, else absent) — a `null` must mean *the board declares no priority*, never *we did not look*. Type and estimate are not columns: they live inside `title`, and are parsed from it exactly as they are parsed from a markdown index line.
+2. **Writes are write-through and do not refresh.** `addTask` / `moveTask` / `setReady` / `setPlan` / `appendHistoryEntry` update the snapshot from the values they just wrote — never by reading the board back — and **never advance `fetchedAt`**. A write is not a read: advancing the stamp would extend every *other* record's staleness by a full TTL while only one record actually became current.
+3. **Validate a snapshot before trusting it.** The directory is untrusted input — it may predate the schema, or have been left by another tool. Confirm `meta.json` parses, carries the current `schemaVersion`, and reports `complete: true`; anything else is a cache miss, so discard and refetch rather than reading it as far as it goes. This failure is invisible without the check: a plausible index of unknown provenance yields a backlog quietly days old and several items short, with nothing in the output to say so.
 
 ### History window
 

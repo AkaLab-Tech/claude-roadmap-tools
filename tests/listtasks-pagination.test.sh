@@ -275,9 +275,12 @@ fi
 # completeness-before-reconstruction rule.
 # ==========================================================================
 
-docs_listtasks_start="$(first_line_after "$DOCS_FILE" '### `listTasks(bucket)`' 0)"
+# Match the heading by prefix: the contract signature gained an optional
+# second argument (`listTasks(bucket, options?)`), and this test is about the
+# pagination mandates inside the section, not about the signature's arity.
+docs_listtasks_start="$(first_line_after "$DOCS_FILE" '### `listTasks(bucket' 0)"
 if [ -z "$docs_listtasks_start" ]; then
-  fail "could not find the '### \`listTasks(bucket)\`' section header in $DOCS_FILE"
+  fail "could not find the '### \`listTasks(bucket...\`' section header in $DOCS_FILE"
 else
   docs_end_heading="$(first_line_after "$DOCS_FILE" '### `getTask(id)`' "$docs_listtasks_start")"
   if [ -z "$docs_end_heading" ]; then
