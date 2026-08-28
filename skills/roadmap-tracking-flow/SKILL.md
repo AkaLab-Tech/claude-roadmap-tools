@@ -773,13 +773,13 @@ Two cadences this replaces, both wrong in different directions: refreshing on *e
 
 The markdown mirror is prose for the operator; it cannot answer a structured query. Its `ROADMAP.md` index lines carry `<type> <title> #id ~estimate` and its task-file frontmatter carries `backend` / `backendId` — neither carries the item's Status, its readiness, or its content type. A consumer needing those would have to open every task file and would still come away without them.
 
-So the same refresh also writes a structured snapshot, keyed by **the board rather than the repo** (one board often backs several repos):
+So the same refresh also writes a structured snapshot, **outside the repo** and keyed by **the board rather than the repo** (one board often backs several repos; the host tool picks the actual directory):
 
 ```
-$ATELIER_CONFIG_DIR/cache/<backend-key>/
+<host-cache-dir>/<backend-key>/
   meta.json          # schemaVersion, backend, fetchedAt, buckets, items, complete
   index.json         # one record per item, across all three buckets
-  bodies/<id>.md     # item body, one file per item, named by canonical id
+  bodies/<key>.md    # item body, one file per item, under a stable per-item key
 ```
 
 `<backend-key>` is `project-<owner>-<projectNumber>` / `linear-<teamId>` / `issues-<owner>-<repo>`.

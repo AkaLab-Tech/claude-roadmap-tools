@@ -323,16 +323,16 @@ These are **not two caches**. One fetch, one `fetchedAt`, one TTL governing both
 
 ### Snapshot location and layout
 
-The snapshot is keyed by **the board, not the repository**. One board commonly backs several repos, and keying by repo would store one redundant copy per clone, each refreshing independently. It therefore lives outside any repo, under the atelier config dir:
+The snapshot is keyed by **the board, not the repository**. One board commonly backs several repos, and keying by repo would store one redundant copy per clone, each refreshing independently. It therefore lives **outside any repo**, in a host-level cache directory the consuming tool designates — this contract fixes the *shape* and the *key*, not the path, since the path belongs to whatever installs the plugin:
 
 ```
-$ATELIER_CONFIG_DIR/cache/<backend-key>/
+<host-cache-dir>/<backend-key>/
   meta.json          # provenance and freshness
   index.json         # one record per item, across all three buckets
-  bodies/<id>.md     # item body, one file per item, named by canonical id
+  bodies/<key>.md    # item body, one file per item, under a stable per-item key
 ```
 
-`<backend-key>` names the remote collection: `project-<owner>-<projectNumber>` for `github-project`, `linear-<teamId>` for `linear`, `issues-<owner>-<repo>` for `github-issues`.
+`<backend-key>` names the remote collection: `project-<owner>-<projectNumber>` for `github-project`, `linear-<teamId>` for `linear`, `issues-<owner>-<repo>` for `github-issues`. The per-item key for `bodies/` need only be stable and unique within the snapshot — the backend's native item id is the obvious choice. A body file is written only for an item that has a body, so `bodies/` is legitimately smaller than `index.json`'s record count; that is not an incomplete write.
 
 `meta.json`:
 

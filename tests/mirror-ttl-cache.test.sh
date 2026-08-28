@@ -237,8 +237,8 @@ snapshot_text="$(section_from_heading "$SKILL_FILE" '### Snapshot index (the mac
   || fail "could not find the 'Snapshot index' subsection in $SKILL_FILE"
 
 if [ -n "${snapshot_text:-}" ]; then
-  if ! printf '%s\n' "$snapshot_text" | grep -Fq 'ATELIER_CONFIG_DIR/cache'; then
-    fail "the snapshot index does not live under \$ATELIER_CONFIG_DIR/cache"
+  if ! printf '%s\n' "$snapshot_text" | grep -qi 'outside the repo'; then
+    fail "the snapshot index is not documented as living outside the repo"
   fi
   if ! printf '%s\n' "$snapshot_text" | grep -qi 'rather than the repo\|board rather than'; then
     fail "the snapshot is not documented as keyed by the board rather than the repo"
